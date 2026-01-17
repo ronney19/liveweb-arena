@@ -1,133 +1,155 @@
 """Account query template for Taostats"""
 
 import random
-from enum import Enum
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
-    Variable, VariableType
 )
 
 
-class AccountMetric(Enum):
-    """Metrics available for account queries"""
-    TOP_BY_BALANCE = "top_by_balance"
-    ACCOUNT_COUNT = "account_count"
-
-
-@dataclass
-class AccountMetricSpec:
-    """Specification for an account metric"""
-    metric: AccountMetric
-    display_name: str
-
-
-class AccountMetricVariable(Variable):
-    """Variable for account metric selection"""
-
-    METRICS: Dict[AccountMetric, AccountMetricSpec] = {
-        AccountMetric.TOP_BY_BALANCE: AccountMetricSpec(
-            AccountMetric.TOP_BY_BALANCE, "top account by balance"
-        ),
-        AccountMetric.ACCOUNT_COUNT: AccountMetricSpec(
-            AccountMetric.ACCOUNT_COUNT, "total account count"
-        ),
-    }
-
-    def __init__(self):
-        super().__init__("account_metric", VariableType.TEXT)
-
-    def sample(self, rng: random.Random) -> AccountMetricSpec:
-        metric = rng.choice(list(self.METRICS.keys()))
-        return self.METRICS[metric]
-
-    def get_display_value(self, value: AccountMetricSpec) -> str:
-        return value.display_name
-
-    def get_api_value(self, value: AccountMetricSpec) -> str:
-        return value.metric.value
+# Known addresses with verifiable balances
+# Format: (address, description)
+KNOWN_ADDRESSES = [
+    ("5GcCZ2BPXBjgG88tXJCEtkbdg2hNrPbL4EFfbiVRvBZdSQDC", "Taostats validator"),
+    ("5HCFWvRqzSHWRPecN7q8J6c7aKQnrCZTMHstPv39xL1wgDHh", "Apex subnet owner"),
+    ("5DvTpiniW9s3APmHRYn8FroUWyfnLtrsid5Mtn5EwMXHN2ed", "OTF wallet"),
+]
 
 
 @register_template("taostats_account")
 class AccountTemplate(QuestionTemplate):
     """
-    Template for account queries on Taostats.
+    Template for account balance queries.
 
-    Generates questions about Bittensor accounts/addresses.
-    Data available on https://taostats.io/accounts
+    Tests AI's ability to search for and find specific account information.
+    Ground truth is fetched from Bittensor SDK.
     """
 
-    PATTERNS: Dict[AccountMetric, List[str]] = {
-        AccountMetric.TOP_BY_BALANCE: [
-            "Go to taostats.io/accounts and find which account has the highest free balance.",
-            "On taostats.io/accounts, which address has the most TAO balance?",
-        ],
-        AccountMetric.ACCOUNT_COUNT: [
-            "Go to taostats.io/accounts and find the total number of accounts on Bittensor.",
-            "On taostats.io/accounts, how many total accounts exist on the network?",
-        ],
-    }
+    PATTERNS: List[str] = [
+        "Search for address {address} on taostats.io and find its free balance.",
+        "Go to taostats.io and look up the balance of {address}.",
+        "What is the free balance of wallet {address}? Search on taostats.io.",
+    ]
 
     def __init__(self):
         super().__init__("taostats_account")
-        self.register_variable(AccountMetricVariable())
 
     def generate(self, seed: int) -> GeneratedQuestion:
         rng = random.Random(seed)
 
-        metric: AccountMetricSpec = self._variables["account_metric"].sample(rng)
+        address, description = rng.choice(KNOWN_ADDRESSES)
+        pattern = rng.choice(self.PATTERNS)
 
-        patterns = self.PATTERNS.get(metric.metric, [])
-        pattern = rng.choice(patterns)
-        question_text = pattern
+        # Use truncated address in question to make it searchable
+        short_addr = f"{address[:8]}...{address[-6:]}"
+        question_text = pattern.format(address=short_addr)
 
         validation_info = {
-            "metric": metric.metric.value,
-            "display_name": metric.display_name,
+            "address": address,
+            "short_address": short_addr,
+            "description": description,
         }
 
         return GeneratedQuestion(
             question_text=question_text,
-            start_url="https://taostats.io/accounts",
-            variables={"metric": metric},
+            start_url="https://taostats.io",
+            variables={"address": address},
             validation_info=validation_info,
             template_name=self.name,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
-        metric = validation_info.get("metric", "")
+        short_addr = validation_info.get("short_address", "")
+        return f"""Task-Specific Rules (Account Balance: {short_addr}):
+- Score 1.0: Agent provides balance within 20% of actual (balances change frequently)
+- Score 0.5: Agent provides a balance in correct order of magnitude
+- Score 0.0: No balance found, wrong format, or wildly incorrect"""
 
-        if metric == "top_by_balance":
-            return """Task-Specific Rules (Top Account by Balance):
-- Score 1.0: Agent provides account address/name with balance amount
-- Score 0.5: Agent provides account address only without balance
-- Score 0.0: No answer, error message, or invalid format"""
+    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[float]:
+        """Fetch account balance from Bittensor SDK"""
+        try:
+            import bittensor as bt
 
-        if metric == "account_count":
-            return """Task-Specific Rules (Account Count):
-- Score 1.0: Agent provides a specific number (e.g., "420,589 accounts")
-- Score 0.5: Agent provides approximate count
-- Score 0.0: No count or clearly implausible number"""
+            address = validation_info.get("address", "")
+            if not address:
+                return None
 
-        return """Task-Specific Rules:
-- Score 1.0: Specific, well-formatted answer with concrete data
-- Score 0.5: Partially complete answer
-- Score 0.0: No answer or invalid format"""
+            subtensor = bt.Subtensor(network="finney")
+            balance = subtensor.get_balance(address)
 
-    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[Any]:
-        """Account data is dynamic, use LLM validation"""
-        return None
+            return float(balance.tao) if balance else None
+
+        except Exception:
+            return None
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
-        """Validate answer - delegates to LLM validation"""
+        """Validate balance answer"""
+        import re
+
+        ground_truth = await self.get_ground_truth(validation_info)
+
+        if ground_truth is None:
+            return ValidationResult(
+                score=0.0,
+                is_correct=False,
+                expected=None,
+                actual=answer,
+                details="Ground truth unavailable",
+            )
+
+        # Extract number from answer
+        # Handle formats like: 0.5 TAO, τ0.5, 0.5
+        clean_answer = answer.replace(',', '').replace('τ', '').replace('TAO', '')
+        numbers = re.findall(r'[\d.]+', clean_answer)
+
+        agent_balance = None
+        for n in numbers:
+            try:
+                bal = float(n)
+                # Sanity check - balance should be in reasonable range
+                if 0 <= bal < 1000000000:
+                    agent_balance = bal
+                    break
+            except ValueError:
+                continue
+
+        if agent_balance is None:
+            return ValidationResult(
+                score=0.0,
+                is_correct=False,
+                expected=f"τ{ground_truth:.6f}",
+                actual=answer,
+                details="No valid balance found in answer",
+            )
+
+        # Calculate difference
+        if ground_truth == 0:
+            pct_diff = 100 if agent_balance > 0 else 0
+        else:
+            pct_diff = abs(agent_balance - ground_truth) / ground_truth * 100
+
+        # Check order of magnitude
+        if ground_truth > 0:
+            magnitude_match = (
+                0.001 * ground_truth <= agent_balance <= 1000 * ground_truth
+            )
+        else:
+            magnitude_match = agent_balance < 1
+
+        if pct_diff <= 20:
+            score = 1.0
+        elif magnitude_match:
+            score = 0.5
+        else:
+            score = 0.0
+
         return ValidationResult(
-            score=0.0,
-            is_correct=False,
-            expected=None,
-            actual=answer,
-            details="Account validation requires LLM",
+            score=score,
+            is_correct=score >= 0.8,
+            expected=f"τ{ground_truth:.6f}",
+            actual=f"τ{agent_balance:.6f}" if agent_balance else answer,
+            details=f"Difference: {pct_diff:.1f}%",
         )
