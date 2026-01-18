@@ -75,7 +75,7 @@ async def main():
     parser.add_argument(
         "--timeout",
         type=int,
-        default=300,
+        default=3600,
         help="Total timeout in seconds (default: 300)",
     )
     parser.add_argument(
@@ -222,4 +222,4 @@ async def main():
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    os._exit(exit_code)

@@ -182,11 +182,11 @@ Key validation points:
         except (ValueError, TypeError):
             return None
 
-    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[str]:
         """
-        Fetch market data for all symbols and return structured summary.
+        Fetch market data for all symbols and return readable summary string.
 
-        This ground truth will be provided to the LLM validator to judge the answer.
+        Returns a string like: "Market direction: UP. Data: aapl.us: 255.53 (+1.04%), ..."
         """
         symbols = validation_info.get("symbols", [])
         summary_type = validation_info.get("summary_type", "us_indices")

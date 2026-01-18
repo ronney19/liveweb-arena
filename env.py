@@ -61,7 +61,7 @@ class Actor:
         num_subtasks: int = 2,
         plugins: Optional[List[str]] = None,
         max_steps: int = 30,
-        timeout: int = 600,
+        timeout: int = 3600,
         temperature: float = 0.7,
         max_concurrency: int = 2,
         validation_model: Optional[str] = None,

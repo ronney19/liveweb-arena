@@ -11,10 +11,10 @@ from .variables import _fetch_active_subnet_ids, _fetch_subnet_name
 
 
 class AnalysisType(Enum):
-    """Types of analysis questions"""
+    """Types of analysis questions - only metrics visible on taostats.io"""
     HIGHEST_PRICE_TO_STAKE = "highest_price_to_stake"
     LOWEST_PRICE_TO_STAKE = "lowest_price_to_stake"
-    HIGHEST_STAKE_EFFICIENCY = "highest_stake_efficiency"
+    # Note: HIGHEST_STAKE_EFFICIENCY removed - alpha_out not shown on website
     HIGHEST_TAO_IN = "highest_tao_in"
     HIGHEST_PRICE = "highest_price"
     LOWEST_PRICE = "lowest_price"
@@ -53,11 +53,6 @@ class AnalysisTemplate(QuestionTemplate):
             "Among these subnets: {subnets}, which one has the lowest price-to-TAO-staked ratio? Check taostats.io/subnets.",
             "Compare {subnets} on taostats.io/subnets. Which subnet has the lowest alpha price relative to its TAO staked (best value)?",
             "Looking at {subnets}, which offers the best value (lowest price per TAO staked)?",
-        ],
-        AnalysisType.HIGHEST_STAKE_EFFICIENCY: [
-            "Among {subnets}, which subnet has the highest alpha-out to alpha-in ratio (stake efficiency)? Check taostats.io/subnets.",
-            "Compare {subnets} on taostats.io. Which subnet converts alpha-in to alpha-out most efficiently?",
-            "Looking at {subnets}, which has the best stake efficiency?",
         ],
         AnalysisType.HIGHEST_TAO_IN: [
             "Among {subnets}, which subnet has the most TAO staked? Check taostats.io/subnets.",
@@ -119,7 +114,6 @@ class AnalysisTemplate(QuestionTemplate):
         type_rules = {
             "highest_price_to_stake": "highest price-to-stake ratio",
             "lowest_price_to_stake": "lowest price-to-stake ratio",
-            "highest_stake_efficiency": "highest alpha-out/alpha-in ratio",
             "highest_tao_in": "highest TAO staked",
             "highest_price": "highest alpha price",
             "lowest_price": "lowest alpha price",
@@ -130,12 +124,12 @@ class AnalysisTemplate(QuestionTemplate):
 - Score 1.0: Agent correctly identifies the subnet with {rule}
 - Score 0.0: Wrong subnet or no clear answer"""
 
-    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[Tuple[str, List[str]]]:
+    async def get_ground_truth(self, validation_info: Dict[str, Any]) -> Optional[str]:
         """
         Calculate ground truth by fetching subnet data and computing derived metrics.
 
         Returns:
-            Tuple of (correct_answer_name, top_2_names) or None
+            Name of the winning subnet (simple string for clear LLM validation)
         """
         try:
             import bittensor as bt
@@ -158,22 +152,16 @@ class AnalysisTemplate(QuestionTemplate):
 
                     price = float(info.price.tao) if info.price else 0
                     tao_in = float(info.tao_in.tao) if info.tao_in else 0
-                    alpha_in = float(info.alpha_in.tao) if info.alpha_in else 0
-                    alpha_out = float(info.alpha_out.tao) if info.alpha_out else 0
 
                     # Calculate derived metrics
                     price_to_stake = price / tao_in if tao_in > 0 else 0
-                    stake_efficiency = alpha_out / alpha_in if alpha_in > 0 else 0
 
                     subnet_data.append({
                         "netuid": netuid,
                         "name": subnet_names[i],
                         "price": price,
                         "tao_in": tao_in,
-                        "alpha_in": alpha_in,
-                        "alpha_out": alpha_out,
                         "price_to_stake": price_to_stake,
-                        "stake_efficiency": stake_efficiency,
                     })
                 except Exception:
                     continue
@@ -185,7 +173,6 @@ class AnalysisTemplate(QuestionTemplate):
             sort_config = {
                 "highest_price_to_stake": ("price_to_stake", True),
                 "lowest_price_to_stake": ("price_to_stake", False),
-                "highest_stake_efficiency": ("stake_efficiency", True),
                 "highest_tao_in": ("tao_in", True),
                 "highest_price": ("price", True),
                 "lowest_price": ("price", False),
@@ -197,10 +184,7 @@ class AnalysisTemplate(QuestionTemplate):
             sort_key, reverse = sort_config[analysis_type]
             subnet_data.sort(key=lambda x: x[sort_key], reverse=reverse)
 
-            top_name = subnet_data[0]["name"]
-            top_2_names = [s["name"] for s in subnet_data[:2]]
-
-            return (top_name, top_2_names)
+            return subnet_data[0]["name"]
 
         except Exception:
             return None
@@ -209,9 +193,9 @@ class AnalysisTemplate(QuestionTemplate):
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
         """Validate analysis answer"""
-        ground_truth = await self.get_ground_truth(validation_info)
+        top_name = await self.get_ground_truth(validation_info)
 
-        if ground_truth is None:
+        if top_name is None:
             return ValidationResult(
                 score=0.0,
                 is_correct=False,
@@ -220,7 +204,6 @@ class AnalysisTemplate(QuestionTemplate):
                 details="Ground truth unavailable",
             )
 
-        top_name, _ = ground_truth
         answer_lower = answer.lower()
 
         # Binary scoring: correct subnet or wrong

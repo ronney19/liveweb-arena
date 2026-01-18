@@ -13,7 +13,7 @@ class SubnetMetric(Enum):
     NAME = "name"
     OWNER = "owner"
     PRICE = "price"  # Alpha token price
-    GITHUB_REPO = "github_repo"  # GitHub repository URL
+    # Note: GITHUB_REPO removed - not all subnets have subnet_identity set
     # Note: REGISTRATION_COST removed - get_subnet_burn_cost unreliable (StateDiscardedError)
     # Note: EMISSION removed - SDK returns TAO value, website shows percentage (incompatible)
     # Note: TEMPO removed - not displayed on taostats.io
@@ -131,9 +131,6 @@ class MetricVariable(Variable):
         SubnetMetric.PRICE: MetricSpec(
             SubnetMetric.PRICE, "alpha price", unit="τ", is_numeric=True,
             tolerance_pct=10.0
-        ),
-        SubnetMetric.GITHUB_REPO: MetricSpec(
-            SubnetMetric.GITHUB_REPO, "GitHub repository", is_numeric=False
         ),
     }
 

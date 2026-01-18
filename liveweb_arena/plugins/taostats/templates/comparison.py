@@ -11,11 +11,11 @@ from .variables import _fetch_active_subnet_ids, _fetch_subnet_name
 
 
 class ComparisonMetric(Enum):
-    """Metrics for subnet comparison"""
+    """Metrics for subnet comparison - only metrics visible on taostats.io"""
     PRICE = "price"
     TAO_STAKED = "tao_staked"
-    ALPHA_IN = "alpha_in"
-    ALPHA_OUT = "alpha_out"
+    # Note: ALPHA_IN and ALPHA_OUT removed - not displayed on website
+    # (SDK alpha_in/alpha_out are different from "Alpha in Pool" shown on site)
 
 
 def _get_subnet_pairs(rng: random.Random, count: int = 2) -> List[Tuple[int, str]]:
@@ -48,16 +48,6 @@ class ComparisonTemplate(QuestionTemplate):
             "Go to taostats.io/subnets and compare {subnet1} and {subnet2}. Which has higher TAO in?",
             "Compare {subnet1} and {subnet2}: which has more TAO deposited?",
             "Which subnet has attracted more TAO: {subnet1} or {subnet2}? Check taostats.io.",
-        ],
-        ComparisonMetric.ALPHA_IN: [
-            "Between {subnet1} and {subnet2}, which has higher alpha-in? Check taostats.io/subnets.",
-            "Compare {subnet1} (SN{id1}) and {subnet2} (SN{id2}): which has more alpha tokens staked in?",
-            "Which subnet has higher alpha-in value: {subnet1} or {subnet2}?",
-        ],
-        ComparisonMetric.ALPHA_OUT: [
-            "Between {subnet1} and {subnet2}, which has higher alpha-out? Check taostats.io/subnets.",
-            "Compare {subnet1} (SN{id1}) and {subnet2} (SN{id2}): which distributes more alpha tokens?",
-            "Which subnet has higher alpha-out value: {subnet1} or {subnet2}?",
         ],
     }
 
@@ -108,8 +98,6 @@ class ComparisonTemplate(QuestionTemplate):
         metric_names = {
             "price": "Price",
             "tao_staked": "TAO Staked",
-            "alpha_in": "Alpha-In",
-            "alpha_out": "Alpha-Out",
         }
         metric_display = metric_names.get(metric, metric)
 
@@ -147,12 +135,6 @@ class ComparisonTemplate(QuestionTemplate):
             elif metric == "tao_staked":
                 val1 = float(info1.tao_in.tao) if info1.tao_in else 0
                 val2 = float(info2.tao_in.tao) if info2.tao_in else 0
-            elif metric == "alpha_in":
-                val1 = float(info1.alpha_in.tao) if info1.alpha_in else 0
-                val2 = float(info2.alpha_in.tao) if info2.alpha_in else 0
-            elif metric == "alpha_out":
-                val1 = float(info1.alpha_out.tao) if info1.alpha_out else 0
-                val2 = float(info2.alpha_out.tao) if info2.alpha_out else 0
             else:
                 return None
 

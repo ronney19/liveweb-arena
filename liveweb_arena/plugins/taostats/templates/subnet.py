@@ -44,13 +44,6 @@ class SubnetInfoTemplate(QuestionTemplate):
             "Find the alpha price for {subnet} on taostats.io.",
             "What's the current price of {subnet}'s alpha token in TAO?",
         ],
-        SubnetMetric.GITHUB_REPO: [
-            "What is the GitHub repository for {subnet}?",
-            "Where can I find the source code for {subnet}?",
-            "What's the official GitHub URL of {subnet}?",
-            "Find the GitHub link for {subnet} on taostats.io.",
-            "What repository hosts the code for {subnet}?",
-        ],
     }
 
     def __init__(self):
@@ -64,7 +57,6 @@ class SubnetInfoTemplate(QuestionTemplate):
         self.register_validator("price", NumericToleranceValidator(
             full_tolerance=0.0001, partial_tolerance=0.001, unit="τ"
         ))
-        self.register_validator("github_repo", ExactMatchValidator(case_sensitive=False))
 
     def generate(self, seed: int) -> GeneratedQuestion:
         rng = random.Random(seed)
@@ -110,11 +102,6 @@ IMPORTANT: The webpage shows truncated addresses by default (e.g., "5DWgkC...uS9
 Simply copying this truncated format is NOT sufficient for full score.
 Agent should click the address to get the full address from the URL or account page."""
 
-        if metric == "github_repo":
-            return """Task-Specific Rules (GitHub Repository):
-- Score 1.0: URLs match (case-insensitive)
-- Score 0.0: Different URLs or no repository"""
-
         return """Task-Specific Rules (Numeric Value):
 - Score 1.0: Values match within tolerance
 - Score 0.0: Values differ significantly"""
@@ -143,11 +130,6 @@ Agent should click the address to get the full address from the URL or account p
                 return info.owner_coldkey
             elif metric == "price":
                 return f"τ{info.price.tao:.6f}" if info.price else None
-            # Note: tempo removed - not displayed on taostats.io
-            elif metric == "github_repo":
-                if info.subnet_identity and info.subnet_identity.github_repo:
-                    return info.subnet_identity.github_repo
-                return None
 
             return None
 
