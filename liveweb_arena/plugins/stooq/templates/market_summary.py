@@ -37,19 +37,19 @@ class StooqMarketSummaryTemplate(QuestionTemplate):
 
     PATTERNS = {
         MarketSummaryType.US_INDICES: [
-            "Summarize today's US stock market performance. Check stooq.com for DJI, SPX, and NDX values and their percentage changes. Describe if the market is up or down overall.",
-            "Go to stooq.com and analyze the US market based on the Dow Jones (^dji), S&P 500 (^spx), and NASDAQ 100 (^ndx). Are they mostly up or down? By how much?",
-            "What is the overall direction of the US stock market today? Check stooq.com for the major indices (DJI, SPX, NDX) and summarize their performance.",
+            "Summarize today's US stock market performance based on DJI, SPX, and NDX values and their percentage changes. Is the market up or down overall?",
+            "Analyze the US market based on the Dow Jones (^dji), S&P 500 (^spx), and NASDAQ 100 (^ndx). Are they mostly up or down? By how much?",
+            "What is the overall direction of the US stock market today? Check the major indices (DJI, SPX, NDX) and summarize their performance.",
         ],
         MarketSummaryType.TECH_STOCKS: [
-            "Analyze the tech sector's performance today. Check stooq.com for AAPL, MSFT, NVDA, and GOOGL. Summarize which are gaining and which are losing.",
-            "Go to stooq.com and check the major tech stocks (Apple, Microsoft, NVIDIA, Alphabet). How is the tech sector performing today?",
-            "Summarize today's tech stock performance by checking AAPL, MSFT, NVDA, and GOOGL on stooq.com. Are tech stocks mostly up or down?",
+            "Analyze the tech sector's performance today based on AAPL, MSFT, NVDA, and GOOGL. Summarize which are gaining and which are losing.",
+            "Check the major tech stocks (Apple, Microsoft, NVIDIA, Alphabet). How is the tech sector performing today?",
+            "Summarize today's tech stock performance based on AAPL, MSFT, NVDA, and GOOGL. Are tech stocks mostly up or down?",
         ],
         MarketSummaryType.MARKET_TREND: [
-            "Based on the major US indices on stooq.com (DJI, SPX, NDX), is the market in an uptrend or downtrend today? Provide the actual percentage changes.",
-            "Check stooq.com for the DJI, SPX, and NDX. Determine the market trend and report the percentage change for each index.",
-            "Analyze the current market trend using data from stooq.com. Look at DJI, SPX, and NDX. Is the market bullish or bearish today?",
+            "Based on the major US indices (DJI, SPX, NDX), is the market in an uptrend or downtrend today? Provide the actual percentage changes.",
+            "Check the DJI, SPX, and NDX. Determine the market trend and report the percentage change for each index.",
+            "Analyze the current market trend based on DJI, SPX, and NDX. Is the market bullish or bearish today?",
         ],
     }
 
@@ -83,6 +83,9 @@ class StooqMarketSummaryTemplate(QuestionTemplate):
             "symbols": symbols,
         }
 
+        # 2 steps per symbol (goto + read) + buffer
+        expected_steps = len(symbols) * 2 + 4
+
         return GeneratedQuestion(
             question_text=question_text,
             start_url="https://stooq.com/",
@@ -91,6 +94,7 @@ class StooqMarketSummaryTemplate(QuestionTemplate):
             },
             validation_info=validation_info,
             template_name=self.name,
+            expected_steps=expected_steps,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:

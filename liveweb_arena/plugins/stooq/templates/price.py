@@ -31,43 +31,43 @@ class StooqPriceTemplate(QuestionTemplate):
     """
 
     STOCK_PATTERNS = [
-        "What is the {metric} of {instrument} stock? Check stooq.com.",
-        "Go to stooq.com and find the {metric} of {instrument}.",
-        "What is {instrument} trading at on stooq.com?",
-        "Find the {metric} for {instrument} on stooq.com.",
-        "Check stooq.com for the latest {metric} of {instrument} stock.",
-        "What's the current {metric} of {instrument}? Use stooq.com.",
+        "What is the {metric} of {instrument} stock?",
+        "What is {instrument} trading at?",
+        "Find the {metric} for {instrument}.",
+        "What is the current {metric} of {instrument}?",
+        "What's the latest {metric} of {instrument} stock?",
+        "What's the current {metric} of {instrument}?",
     ]
 
     # Index patterns vary based on metric type
     INDEX_PRICE_PATTERNS = [
-        "What is the current value of the {instrument}? Check stooq.com.",
-        "What is the {instrument} at right now? Go to stooq.com.",
-        "Check stooq.com for the latest {instrument} value.",
-        "Find the current {instrument} index value on stooq.com.",
+        "What is the current value of the {instrument}?",
+        "What is the {instrument} at right now?",
+        "Find the current {instrument} value.",
+        "What is the current {instrument} index value?",
     ]
 
     INDEX_CHANGE_PATTERNS = [
-        "What is the {metric} of the {instrument} today? Check stooq.com.",
-        "Find the {metric} of {instrument} index on stooq.com.",
-        "What's the {metric} of the {instrument}? Use stooq.com.",
-        "Check the {metric} for {instrument} on stooq.com today.",
+        "What is the {metric} of the {instrument} today?",
+        "Find the {metric} of {instrument} index.",
+        "What's the {metric} of the {instrument}?",
+        "What is today's {metric} for {instrument}?",
     ]
 
     CURRENCY_PATTERNS = [
-        "What is the current {instrument} exchange rate? Check stooq.com.",
-        "Find the {metric} for {instrument} on stooq.com.",
-        "What is {instrument} trading at? Go to stooq.com.",
-        "Check stooq.com for the {instrument} rate.",
-        "What's the current {instrument} price on stooq.com?",
+        "What is the current {instrument} exchange rate?",
+        "Find the {metric} for {instrument}.",
+        "What is {instrument} trading at?",
+        "What is the {instrument} rate?",
+        "What's the current {instrument} price?",
     ]
 
     COMMODITY_PATTERNS = [
-        "What is the current price of {instrument}? Check stooq.com.",
-        "Find the {metric} for {instrument} on stooq.com.",
-        "What is {instrument} trading at? Go to stooq.com.",
-        "Check stooq.com for the latest {instrument} price.",
-        "What's the {metric} of {instrument}? Use stooq.com.",
+        "What is the current price of {instrument}?",
+        "Find the {metric} for {instrument}.",
+        "What is {instrument} trading at?",
+        "What is the latest {instrument} price?",
+        "What's the {metric} of {instrument}?",
     ]
 
     STOOQ_CSV_URL = "https://stooq.com/q/d/l/"

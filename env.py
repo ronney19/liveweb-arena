@@ -377,24 +377,12 @@ class Actor:
             "metadata": {
                 "type": "instructions",
                 "plugins": list(task.plugin_hints.keys()) if task.plugin_hints else [],
-            }
-        })
-
-        # User message: the actual task questions
-        questions = []
-        for i, subtask in enumerate(task.subtasks, 1):
-            questions.append(f"{i}. {subtask.intent}\n   Answer tag: {subtask.answer_tag}")
-
-        user_content = "## Tasks to Complete\n\n" + "\n\n".join(questions)
-
-        conversation.append({
-            "role": "user",
-            "content": user_content,
-            "metadata": {
-                "type": "task_questions",
                 "num_subtasks": len(task.subtasks),
             }
         })
+
+        # Note: Task questions are already included in system_content via build_system_prompt
+        # No need for a separate user message with tasks
 
         # Alternating user (environment) and assistant (agent) turns
         for step in trajectory:

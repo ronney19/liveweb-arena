@@ -64,7 +64,7 @@ class GeneratedQuestion:
     variables: Dict[str, Any]  # Resolved variable values
     validation_info: Dict[str, Any]  # Info needed for validation
     template_name: str  # Name of the template that generated this
-    expected_steps: int = 10  # Expected number of steps to complete this question
+    expected_steps: int = 5  # Expected number of steps to complete this question
 
 
 class Variable(ABC):

@@ -40,24 +40,24 @@ class StooqComparisonTemplate(QuestionTemplate):
 
     PATTERNS = {
         ComparisonType.HIGHER_PRICE: [
-            "Which has a higher current price: {instruments}? Check stooq.com.",
-            "Compare the prices of {instruments} on stooq.com. Which is trading higher?",
-            "Among {instruments}, which has the highest current price? Use stooq.com.",
+            "Which has a higher current price: {instruments}?",
+            "Compare the prices of {instruments}. Which is trading higher?",
+            "Among {instruments}, which has the highest current price?",
         ],
         ComparisonType.LOWER_PRICE: [
-            "Which has a lower current price: {instruments}? Check stooq.com.",
-            "Compare the prices of {instruments} on stooq.com. Which is trading lower?",
-            "Among {instruments}, which has the lowest current price? Use stooq.com.",
+            "Which has a lower current price: {instruments}?",
+            "Compare the prices of {instruments}. Which is trading lower?",
+            "Among {instruments}, which has the lowest current price?",
         ],
         ComparisonType.BETTER_PERFORMANCE: [
-            "Which performed better today: {instruments}? Check stooq.com for percentage change.",
-            "Compare the daily performance of {instruments} on stooq.com. Which gained the most?",
-            "Among {instruments}, which had the best performance today? Use stooq.com.",
+            "Which performed better today: {instruments}?",
+            "Compare the daily performance of {instruments}. Which gained the most?",
+            "Among {instruments}, which had the best performance today?",
         ],
         ComparisonType.WORSE_PERFORMANCE: [
-            "Which performed worse today: {instruments}? Check stooq.com for percentage change.",
-            "Compare the daily performance of {instruments} on stooq.com. Which lost the most?",
-            "Among {instruments}, which had the worst performance today? Use stooq.com.",
+            "Which performed worse today: {instruments}?",
+            "Compare the daily performance of {instruments}. Which lost the most?",
+            "Among {instruments}, which had the worst performance today?",
         ],
     }
 
@@ -106,6 +106,9 @@ class StooqComparisonTemplate(QuestionTemplate):
             "instrument_type": inst_type.value,
         }
 
+        # 2 steps per instrument (goto + read) + buffer
+        expected_steps = num_instruments * 2 + 4
+
         return GeneratedQuestion(
             question_text=question_text,
             start_url="https://stooq.com/",
@@ -115,6 +118,7 @@ class StooqComparisonTemplate(QuestionTemplate):
             },
             validation_info=validation_info,
             template_name=self.name,
+            expected_steps=expected_steps,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:

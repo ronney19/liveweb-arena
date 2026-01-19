@@ -15,7 +15,7 @@ class SubTask:
     intent: str
     validation_info: dict
     answer_tag: str  # "answer1"..."answer4"
-    expected_steps: int = 10  # Expected steps for this subtask
+    expected_steps: int = 5  # Expected steps for this subtask
     # Note: start_url removed - Agent should decide which URL to visit
 
 

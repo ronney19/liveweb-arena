@@ -38,16 +38,16 @@ class StooqCurrencyTemplate(QuestionTemplate):
 
     PATTERNS = {
         ConversionDirection.BASE_TO_QUOTE: [
-            "If I have {amount} {base}, how many {quote} can I get? Check {pair} on stooq.com.",
-            "Convert {amount} {base} to {quote} using today's rate on stooq.com.",
-            "What is {amount} {base} worth in {quote}? Check stooq.com for the {pair} rate.",
-            "How much {quote} would I get for {amount} {base}? Use stooq.com.",
+            "If I have {amount} {base}, how many {quote} can I get?",
+            "Convert {amount} {base} to {quote} using today's exchange rate.",
+            "What is {amount} {base} worth in {quote}?",
+            "How much {quote} would I get for {amount} {base}?",
         ],
         ConversionDirection.QUOTE_TO_BASE: [
-            "If I have {amount} {quote}, how many {base} can I get? Check {pair} on stooq.com.",
-            "Convert {amount} {quote} to {base} using today's rate on stooq.com.",
-            "What is {amount} {quote} worth in {base}? Check stooq.com for the {pair} rate.",
-            "How much {base} would I get for {amount} {quote}? Use stooq.com.",
+            "If I have {amount} {quote}, how many {base} can I get?",
+            "Convert {amount} {quote} to {base} using today's exchange rate.",
+            "What is {amount} {quote} worth in {base}?",
+            "How much {base} would I get for {amount} {quote}?",
         ],
     }
 

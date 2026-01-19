@@ -90,50 +90,50 @@ class StooqRankingTemplate(QuestionTemplate):
     PATTERNS = {
         RankingMetric.CHANGE_PERCENT: {
             "highest": [
-                "Among {instruments}, which has the {position} highest percentage gain today? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which one has the {position} best performance today?",
-                "Check stooq.com for {instruments}. Which has the {position} highest daily change?",
+                "Among {instruments}, which has the {position} highest percentage gain today?",
+                "Looking at {instruments}, which one has the {position} best performance today?",
+                "Which of {instruments} has the {position} highest daily change?",
             ],
             "lowest": [
-                "Among {instruments}, which has the {position} lowest percentage change today? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which one has the {position} worst performance today?",
-                "Check stooq.com for {instruments}. Which has the {position} biggest decline today?",
+                "Among {instruments}, which has the {position} lowest percentage change today?",
+                "Looking at {instruments}, which one has the {position} worst performance today?",
+                "Which of {instruments} has the {position} biggest decline today?",
             ],
         },
         RankingMetric.CURRENT_PRICE: {
             "highest": [
-                "Among {instruments}, which has the {position} highest stock price? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which one has the {position} highest current price?",
-                "Check stooq.com for {instruments}. Which is the {position} most expensive?",
+                "Among {instruments}, which has the {position} highest stock price?",
+                "Looking at {instruments}, which one has the {position} highest current price?",
+                "Which of {instruments} is the {position} most expensive?",
             ],
             "lowest": [
-                "Among {instruments}, which has the {position} lowest stock price? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which one has the {position} lowest current price?",
-                "Check stooq.com for {instruments}. Which is the {position} cheapest?",
+                "Among {instruments}, which has the {position} lowest stock price?",
+                "Looking at {instruments}, which one has the {position} lowest current price?",
+                "Which of {instruments} is the {position} cheapest?",
             ],
         },
         RankingMetric.WEEK52_GAIN: {
             "highest": [
-                "Among {instruments}, which has gained the {position} most from its 52-week low? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which has the {position} highest gain from its 52-week low?",
-                "Check stooq.com for {instruments}. Which has rallied the {position} most from its annual low?",
+                "Among {instruments}, which has gained the {position} most from its 52-week low?",
+                "Looking at {instruments}, which has the {position} highest gain from its 52-week low?",
+                "Which of {instruments} has rallied the {position} most from its annual low?",
             ],
             "lowest": [
-                "Among {instruments}, which has gained the {position} least from its 52-week low? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which has the {position} smallest gain from its 52-week low?",
-                "Check stooq.com for {instruments}. Which is {position} closest to its annual low?",
+                "Among {instruments}, which has gained the {position} least from its 52-week low?",
+                "Looking at {instruments}, which has the {position} smallest gain from its 52-week low?",
+                "Which of {instruments} is {position} closest to its annual low?",
             ],
         },
         RankingMetric.DISTANCE_FROM_HIGH: {
             "highest": [
-                "Among {instruments}, which is {position} furthest from its 52-week high? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which is the {position} most below its 52-week high?",
-                "Check stooq.com for {instruments}. Which has fallen the {position} most from its annual high?",
+                "Among {instruments}, which is {position} furthest from its 52-week high?",
+                "Looking at {instruments}, which is the {position} most below its 52-week high?",
+                "Which of {instruments} has fallen the {position} most from its annual high?",
             ],
             "lowest": [
-                "Among {instruments}, which is {position} closest to its 52-week high? Check each on stooq.com.",
-                "Looking at {instruments} on stooq.com, which is the {position} nearest to its 52-week high?",
-                "Check stooq.com for {instruments}. Which is {position} closest to its annual high?",
+                "Among {instruments}, which is {position} closest to its 52-week high?",
+                "Looking at {instruments}, which is the {position} nearest to its 52-week high?",
+                "Which of {instruments} is {position} closest to its annual high?",
             ],
         },
     }
@@ -195,9 +195,9 @@ class StooqRankingTemplate(QuestionTemplate):
             "position": position.value,
         }
 
-        # Calculate expected steps: 5 instruments × 3 steps each + buffer
+        # Calculate expected steps: 5 instruments × 2 steps (goto + read) + buffer
         num_instruments = len(instruments)
-        expected_steps = num_instruments * 6 + 10  # ~40 steps for 5 instruments
+        expected_steps = num_instruments * 2 + 5  # ~15 steps for 5 instruments
 
         return GeneratedQuestion(
             question_text=question_text,
@@ -217,8 +217,8 @@ class StooqRankingTemplate(QuestionTemplate):
         """Ranking requires visiting multiple pages - need more steps"""
         instruments = validation_info.get("instruments", [])
         num_instruments = len(instruments)
-        # 6 steps per instrument (navigate + read + potential retry) + 10 buffer
-        return num_instruments * 6 + 10
+        # 2 steps per instrument (goto + read) + buffer
+        return num_instruments * 2 + 5
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
         metric = validation_info.get("metric", "change_percent")

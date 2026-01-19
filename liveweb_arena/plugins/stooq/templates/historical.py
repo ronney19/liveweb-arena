@@ -41,23 +41,23 @@ class StooqHistoricalTemplate(QuestionTemplate):
 
     PATTERNS = {
         HistoricalQueryType.HIGHEST_CLOSE: [
-            "What was the highest closing price of {instrument} in the last {days} trading days? Check stooq.com.",
-            "Find the peak closing price of {instrument} over the past {days} trading days on stooq.com.",
-            "What was the maximum close price for {instrument} in the last {days} days? Use stooq.com.",
+            "What was the highest closing price of {instrument} in the last {days} trading days?",
+            "Find the peak closing price of {instrument} over the past {days} trading days.",
+            "What was the maximum close price for {instrument} in the last {days} days?",
         ],
         HistoricalQueryType.LOWEST_CLOSE: [
-            "What was the lowest closing price of {instrument} in the last {days} trading days? Check stooq.com.",
-            "Find the minimum closing price of {instrument} over the past {days} trading days on stooq.com.",
-            "What was the lowest close for {instrument} in the last {days} days? Use stooq.com.",
+            "What was the lowest closing price of {instrument} in the last {days} trading days?",
+            "Find the minimum closing price of {instrument} over the past {days} trading days.",
+            "What was the lowest close for {instrument} in the last {days} days?",
         ],
         HistoricalQueryType.AVERAGE_CLOSE: [
-            "What was the average closing price of {instrument} over the last {days} trading days? Check stooq.com.",
-            "Calculate the mean closing price of {instrument} for the past {days} trading days using stooq.com.",
-            "Find the average close of {instrument} over the last {days} days on stooq.com.",
+            "What was the average closing price of {instrument} over the last {days} trading days?",
+            "Calculate the mean closing price of {instrument} for the past {days} trading days.",
+            "Find the average close of {instrument} over the last {days} days.",
         ],
         HistoricalQueryType.PRICE_RANGE: [
-            "What was the price range (highest minus lowest close) of {instrument} in the last {days} trading days? Check stooq.com.",
-            "Find the difference between the highest and lowest closing prices of {instrument} over {days} trading days on stooq.com.",
+            "What was the price range (highest minus lowest close) of {instrument} in the last {days} trading days?",
+            "Find the difference between the highest and lowest closing prices of {instrument} over {days} trading days.",
         ],
     }
 
@@ -119,6 +119,7 @@ class StooqHistoricalTemplate(QuestionTemplate):
             },
             validation_info=validation_info,
             template_name=self.name,
+            expected_steps=6,  # Single page but may need scroll
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
