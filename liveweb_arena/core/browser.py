@@ -7,7 +7,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from .models import BrowserObservation, BrowserAction
 
 # Constants
-MAX_ACCESSIBILITY_TREE_LENGTH = 10000
+MAX_ACCESSIBILITY_TREE_LENGTH = 20000
 PAGE_TIMEOUT_MS = 30000
 NAVIGATION_TIMEOUT_MS = 30000
 

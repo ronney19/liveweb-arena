@@ -57,7 +57,8 @@ class StooqPlugin(BasePlugin):
     def usage_hint(self) -> str:
         return """## stooq.com (Finance)
 - /q/?s={symbol} - Quote: price, change, 52-week high/low
-- Symbols: aapl.us (stocks), ^dji/^spx/^dax (indices), eurusd (forex), gc.f (commodities)
+- Indices: ^dji, ^spx, ^dax, ^hsi, ^kospi, ^nkx (use ^ prefix)
+- Stocks: aapl.us, msft.us | Forex: eurusd | Commodities: gc.f
 - /q/d/?s={symbol} - Historical data table
 """
 
