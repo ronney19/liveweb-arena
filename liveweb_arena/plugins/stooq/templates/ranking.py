@@ -12,7 +12,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 
 
@@ -446,4 +446,4 @@ The agent must:
         Ranking: AI visits multiple stock pages, use LAST.
         """
         trigger = UrlPatternTrigger(domains=["stooq.com"])
-        return (trigger, FetchStrategy.LAST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)

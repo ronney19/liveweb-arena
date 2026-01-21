@@ -180,38 +180,21 @@ class Actor:
             llm_client = LLMClient(base_url=base_url, api_key=api_key)
 
             # Set up GroundTruthManager for triggered fetching
-            gt_manager = GroundTruthManager()
-
-            for subtask in task.subtasks:
-                plugin = self.task_manager.get_plugin(subtask.plugin_name)
-                trigger_config = plugin.get_ground_truth_trigger(subtask.validation_info)
-
-                if trigger_config is not None:
-                    trigger, strategy = trigger_config
-
-                    # Create fetch function for this subtask
-                    async def make_fetch_func(p=plugin, vi=subtask.validation_info):
-                        return await p.get_ground_truth(vi)
-
-                    gt_manager.register(
-                        subtask_tag=subtask.answer_tag,
-                        trigger=trigger,
-                        fetch_func=make_fetch_func,
-                        strategy=strategy,
-                    )
+            gt_manager = GroundTruthManager(task_manager=self.task_manager)
+            gt_manager.register_subtasks(task.subtasks)
 
             # Create navigation callback
             async def on_navigation(url: str):
                 triggered = await gt_manager.check_triggers(url)
                 for tag in triggered:
                     state = gt_manager.states.get(tag)
-                    if state:
-                        # Check for errors in fetch
-                        if state.fetches and state.fetches[-1].error:
-                            log("Actor", f"GT fetch error for {tag}: {state.fetches[-1].error}")
-                        elif state.ground_truth is not None:
-                            gt_str = str(state.ground_truth)[:60]
-                            log("Actor", f"Triggered GT fetch for {tag}: {gt_str}...")
+                    if state and state.fetches:
+                        latest = state.fetches[-1]
+                        if latest.error:
+                            log("Actor", f"GT fetch error for {tag}: {latest.error}")
+                        elif latest.value is not None:
+                            val_str = str(latest.value)[:60]
+                            log("Actor", f"GT fetch for {tag}: {val_str}...")
                         else:
                             log("Actor", f"GT fetch for {tag} returned None")
 
@@ -244,43 +227,13 @@ class Actor:
                 final_answer = agent_loop.get_final_answer()
                 usage = agent_loop.get_usage()
 
-            # Fetch remaining ground truths
-            await gt_manager.fetch_remaining()
+            # Fetch remaining ground truths (including legacy subtasks without triggers)
+            await gt_manager.fetch_remaining(subtasks=task.subtasks)
             ground_truths = gt_manager.get_ground_truths()
 
-            # Log fetch details (deduplicated, with timestamps)
-            fetch_details = gt_manager.get_fetch_details()
-            for tag, fetches in fetch_details.items():
-                errors = [f for f in fetches if f['error']]
-                if errors:
-                    for f in errors:
-                        log("Actor", f"Fetch error [{tag}]: {f['error']}", force=True)
-                elif fetches:
-                    # Deduplicate by value and show unique fetches with time
-                    seen = set()
-                    unique_fetches = []
-                    for f in fetches:
-                        val_key = str(f['value'])
-                        if val_key not in seen:
-                            seen.add(val_key)
-                            unique_fetches.append(f)
-
-                    for f in unique_fetches:
-                        import time
-                        ts = time.strftime("%H:%M:%S", time.localtime(f['timestamp'])) if f['timestamp'] else "?"
-                        val_str = str(f['value'])[:60] if f['value'] else 'None'
-                        log("Actor", f"Fetch [{tag}] @{ts}: {val_str}{'...' if len(str(f['value'] or '')) > 60 else ''}")
-
-            # For subtasks without triggers (legacy), fetch now
-            for subtask in task.subtasks:
-                if subtask.answer_tag not in ground_truths:
-                    plugin = self.task_manager.get_plugin(subtask.plugin_name)
-                    try:
-                        gt = await plugin.get_ground_truth(subtask.validation_info)
-                        ground_truths[subtask.answer_tag] = gt
-                    except Exception as e:
-                        log("Actor", f"GT fetch failed for {subtask.answer_tag}: {e}", force=True)
-                        ground_truths[subtask.answer_tag] = None
+            # Log fetch summary
+            for line in gt_manager.get_fetch_summary():
+                log("Actor", line, force="error" in line.lower())
 
             # Log ground truth stats
             gt_stats = gt_manager.get_stats()

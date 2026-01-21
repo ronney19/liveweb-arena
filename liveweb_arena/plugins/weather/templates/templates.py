@@ -8,7 +8,7 @@ import httpx
 from liveweb_arena.core.validators.base import QuestionTemplate, GeneratedQuestion, ValidationResult, register_template
 from liveweb_arena.core.validators.validators import NumericToleranceValidator, BooleanValidator, ExactMatchValidator
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import (
     LocationVariable, DateVariable, WeatherMetricVariable,
@@ -375,7 +375,7 @@ class LocationNameWeatherTemplate(QuestionTemplate):
             domains=["wttr.in"],
             url_contains=city_name if city_name else None,
         )
-        return (trigger, FetchStrategy.FIRST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
 
 
 class MultiDayQuestionType:
@@ -682,4 +682,4 @@ class MultiDayWeatherTemplate(QuestionTemplate):
             domains=["wttr.in"],
             url_contains=city_name if city_name else None,
         )
-        return (trigger, FetchStrategy.FIRST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)

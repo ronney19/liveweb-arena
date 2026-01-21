@@ -12,7 +12,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import (
     StockVariable, IndexVariable, US_STOCKS, INDICES,
@@ -300,4 +300,4 @@ class StooqHistoricalTemplate(QuestionTemplate):
             domains=["stooq.com"],
             url_contains=symbol if symbol else None,
         )
-        return (trigger, FetchStrategy.FIRST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)

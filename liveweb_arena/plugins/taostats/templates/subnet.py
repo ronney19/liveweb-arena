@@ -8,7 +8,7 @@ from liveweb_arena.core.validators.base import (
 )
 from liveweb_arena.core.validators.validators import NumericToleranceValidator, ExactMatchValidator
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import SubnetVariable, MetricVariable, SubnetSpec, MetricSpec, SubnetMetric
 
@@ -186,7 +186,7 @@ Agent should click the address to get the full address from the URL or account p
 
         return validator.validate(answer, ground_truth)
 
-    def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
+    def get_ground_truth_trigger(self, validation_info: dict) -> TriggerConfig:
         """
         Taostats subnet: fetch when AI visits the specific subnet's page.
 
@@ -196,10 +196,11 @@ Agent should click the address to get the full address from the URL or account p
         Strategy: FIRST - single subnet query.
         """
         subnet_id = validation_info.get("subnet_id", "")
-        # Match URL like /subnets/27
         url_pattern = f"/subnets/{subnet_id}" if subnet_id else None
-        trigger = UrlPatternTrigger(
-            domains=["taostats.io"],
-            url_contains=url_pattern,
+        return TriggerConfig(
+            trigger=UrlPatternTrigger(
+                domains=["taostats.io"],
+                url_contains=url_pattern,
+            ),
+            strategy=FetchStrategy.FIRST,
         )
-        return (trigger, FetchStrategy.FIRST)

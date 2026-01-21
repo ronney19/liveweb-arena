@@ -11,7 +11,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import INDICES, US_STOCKS
 
@@ -318,4 +318,4 @@ Key validation points:
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
         """Market summary: LAST for multi-page analysis."""
         trigger = UrlPatternTrigger(domains=["stooq.com"])
-        return (trigger, FetchStrategy.LAST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)

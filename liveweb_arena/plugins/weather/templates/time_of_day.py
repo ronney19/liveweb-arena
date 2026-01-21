@@ -7,7 +7,7 @@ import httpx
 
 from liveweb_arena.core.validators.base import QuestionTemplate, GeneratedQuestion, ValidationResult, register_template
 from liveweb_arena.core.validators.validators import NumericToleranceValidator
-from liveweb_arena.core.ground_truth_trigger import UrlPatternTrigger, FetchStrategy
+from liveweb_arena.core.ground_truth_trigger import UrlPatternTrigger, FetchStrategy, TriggerConfig
 from .variables import (
     LocationVariable, DateVariable, WeatherMetricVariable, TimeOfDayVariable,
     LocationType, MetricType, DateType,
@@ -216,4 +216,4 @@ class TimeOfDayWeatherTemplate(QuestionTemplate):
             domains=["wttr.in"],
             url_contains=city_name if city_name else None,
         )
-        return (trigger, FetchStrategy.FIRST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)

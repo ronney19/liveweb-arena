@@ -139,6 +139,6 @@ class BasePlugin(ABC):
             validation_info: Parameters for the subtask
 
         Returns:
-            Tuple of (GroundTruthTrigger, FetchStrategy) or None
+            TriggerConfig or None (None means fetch at end as fallback)
         """
-        return None  # Default: fetch at start (legacy behavior)
+        return None

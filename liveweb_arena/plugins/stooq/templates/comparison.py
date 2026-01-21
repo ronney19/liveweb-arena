@@ -11,7 +11,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import (
     StockVariable, IndexVariable, US_STOCKS, INDICES,
@@ -305,4 +305,4 @@ class StooqComparisonTemplate(QuestionTemplate):
         last fetch is closest to answer submission.
         """
         trigger = UrlPatternTrigger(domains=["stooq.com"])
-        return (trigger, FetchStrategy.LAST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)

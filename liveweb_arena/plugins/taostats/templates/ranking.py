@@ -8,7 +8,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 
 
@@ -228,4 +228,4 @@ the expected subnet or is within ±1 rank position."""
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
         """Ranking: LAST for multi-page ranking queries."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
-        return (trigger, FetchStrategy.LAST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)

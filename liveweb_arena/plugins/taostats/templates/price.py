@@ -8,7 +8,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 
 
@@ -143,4 +143,4 @@ class PriceTemplate(QuestionTemplate):
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
         """TAO price: trigger when AI visits taostats.io."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
-        return (trigger, FetchStrategy.FIRST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)

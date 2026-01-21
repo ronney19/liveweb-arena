@@ -12,7 +12,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 
 
@@ -503,12 +503,15 @@ The agent MUST report individual percentage changes for verification."""
         else:
             return 0.0, f"{name}: ✗ ({reported:+.2f}% vs {expected:+.2f}%)"
 
-    def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
+    def get_ground_truth_trigger(self, validation_info: dict) -> TriggerConfig:
         """
         Sector analysis: AI visits multiple pages, use ALL for range.
 
         Strategy: ALL - capture data across multiple page visits to
         account for real-time fluctuations. Duplicates will be deduplicated.
         """
-        trigger = UrlPatternTrigger(domains=["stooq.com"])
-        return (trigger, FetchStrategy.ALL)
+        return TriggerConfig(
+            trigger=UrlPatternTrigger(domains=["stooq.com"]),
+            strategy=FetchStrategy.ALL,
+            min_fetch_interval=60.0,
+        )

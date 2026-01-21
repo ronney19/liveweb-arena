@@ -27,6 +27,15 @@ class FetchStrategy(Enum):
     ALL = "all"          # Record all, use range for validation
 
 
+@dataclass
+class TriggerConfig:
+    """Configuration for ground truth triggering."""
+
+    trigger: "GroundTruthTrigger"
+    strategy: FetchStrategy = FetchStrategy.FIRST
+    min_fetch_interval: float = 120.0  # Minimum seconds between fetches for LAST/ALL
+
+
 class GroundTruthTrigger(ABC):
     """Base class for ground truth fetch triggers."""
 
@@ -241,11 +250,19 @@ class GroundTruthState:
     trigger: GroundTruthTrigger
     strategy: FetchStrategy = FetchStrategy.FIRST
     fetches: List[GroundTruthFetch] = field(default_factory=list)
+    min_fetch_interval: float = 60.0  # Minimum seconds between fetches for ALL strategy
 
     @property
     def triggered(self) -> bool:
         """Whether at least one trigger occurred."""
         return len(self.fetches) > 0
+
+    @property
+    def last_fetch_time(self) -> Optional[float]:
+        """Get timestamp of the most recent fetch."""
+        if not self.fetches:
+            return None
+        return self.fetches[-1].timestamp
 
     @property
     def ground_truth(self) -> Any:
@@ -304,11 +321,24 @@ class GroundTruthState:
         return None
 
     def should_fetch_again(self) -> bool:
-        """Whether to fetch on next trigger based on strategy."""
+        """Whether to fetch on next trigger based on strategy and rate limiting."""
+        import time
+
         if self.strategy == FetchStrategy.FIRST:
             return not self.triggered
-        else:  # LAST or ALL
+
+        # LAST or ALL: check rate limiting
+        if not self.triggered:
             return True
+
+        # Enforce minimum interval between fetches
+        last_time = self.last_fetch_time
+        if last_time is not None:
+            elapsed = time.time() - last_time
+            if elapsed < self.min_fetch_interval:
+                return False
+
+        return True
 
 
 class GroundTruthManager:
@@ -316,8 +346,8 @@ class GroundTruthManager:
     Manages ground truth fetching for all subtasks during evaluation.
 
     Usage:
-        manager = GroundTruthManager()
-        manager.register(subtask, trigger, fetch_func, strategy)
+        manager = GroundTruthManager(task_manager)
+        manager.register_subtasks(task.subtasks)
 
         # In agent loop, after each navigation:
         await manager.check_triggers(current_url)
@@ -329,32 +359,39 @@ class GroundTruthManager:
         ground_truths = manager.get_ground_truths()
     """
 
-    def __init__(self):
+    def __init__(self, task_manager=None):
         self.states: Dict[str, GroundTruthState] = {}
         self._fetch_funcs: Dict[str, Callable] = {}
+        self._task_manager = task_manager
 
-    def register(
-        self,
-        subtask_tag: str,
-        trigger: GroundTruthTrigger,
-        fetch_func: Callable,
-        strategy: FetchStrategy = FetchStrategy.FIRST,
-    ):
+    def register_subtasks(self, subtasks: list) -> None:
         """
-        Register a subtask for ground truth monitoring.
+        Register all subtasks for ground truth monitoring.
 
         Args:
-            subtask_tag: The answer tag (e.g., "answer1")
-            trigger: The trigger condition
-            fetch_func: Async function to fetch ground truth
-            strategy: When to fetch on multiple triggers
+            subtasks: List of SubTask objects
         """
-        self.states[subtask_tag] = GroundTruthState(
-            subtask_tag=subtask_tag,
-            trigger=trigger,
-            strategy=strategy,
-        )
-        self._fetch_funcs[subtask_tag] = fetch_func
+        if self._task_manager is None:
+            raise ValueError("task_manager required for register_subtasks")
+
+        for subtask in subtasks:
+            plugin = self._task_manager.get_plugin(subtask.plugin_name)
+            config = plugin.get_ground_truth_trigger(subtask.validation_info)
+
+            if config is None:
+                continue
+
+            # Create fetch function with captured values
+            async def make_fetch_func(p=plugin, vi=subtask.validation_info):
+                return await p.get_ground_truth(vi)
+
+            self.states[subtask.answer_tag] = GroundTruthState(
+                subtask_tag=subtask.answer_tag,
+                trigger=config.trigger,
+                strategy=config.strategy,
+                min_fetch_interval=config.min_fetch_interval,
+            )
+            self._fetch_funcs[subtask.answer_tag] = make_fetch_func
 
     async def check_triggers(self, url: str, max_retries: int = 3) -> List[str]:
         """
@@ -406,11 +443,20 @@ class GroundTruthManager:
 
         return triggered
 
-    async def fetch_remaining(self, max_retries: int = 3):
-        """Fetch ground truth for any subtasks that were never triggered."""
+    async def fetch_remaining(self, subtasks: list = None, max_retries: int = 3):
+        """
+        Fetch ground truth for any subtasks that were never triggered.
+
+        Also handles subtasks without triggers (legacy) if subtasks list is provided.
+
+        Args:
+            subtasks: Optional list of SubTask objects for legacy handling
+            max_retries: Maximum retry attempts for network errors
+        """
         import asyncio
         import time
 
+        # Fetch for registered but not triggered
         for tag, state in self.states.items():
             if state.triggered:
                 continue
@@ -424,7 +470,6 @@ class GroundTruthManager:
                     fetch.error = None
                     break
                 except Exception as e:
-                    # Retry on network-related errors
                     error_name = type(e).__name__
                     if any(err in error_name for err in ['Timeout', 'Connect', 'Network']):
                         if attempt < max_retries - 1:
@@ -434,6 +479,39 @@ class GroundTruthManager:
                     break
 
             state.fetches.append(fetch)
+
+        # Handle subtasks without triggers (legacy)
+        if subtasks and self._task_manager:
+            for subtask in subtasks:
+                if subtask.answer_tag in self.states:
+                    continue  # Already registered
+
+                plugin = self._task_manager.get_plugin(subtask.plugin_name)
+
+                # Create state and fetch
+                state = GroundTruthState(
+                    subtask_tag=subtask.answer_tag,
+                    trigger=None,
+                    strategy=FetchStrategy.FIRST,
+                )
+                fetch = GroundTruthFetch(url="legacy", value=None, timestamp=time.time())
+
+                for attempt in range(max_retries):
+                    try:
+                        fetch.value = await plugin.get_ground_truth(subtask.validation_info)
+                        fetch.error = None
+                        break
+                    except Exception as e:
+                        error_name = type(e).__name__
+                        if any(err in error_name for err in ['Timeout', 'Connect', 'Network']):
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1.0 * (attempt + 1))
+                                continue
+                        fetch.error = str(e)
+                        break
+
+                state.fetches.append(fetch)
+                self.states[subtask.answer_tag] = state
 
     def get_ground_truths(self) -> Dict[str, Any]:
         """Get all ground truths as a dict."""
@@ -491,3 +569,40 @@ class GroundTruthManager:
             ]
             for tag, state in self.states.items()
         }
+
+    def get_fetch_summary(self) -> List[str]:
+        """
+        Get formatted fetch summary with deduplication and timestamps.
+
+        Returns:
+            List of formatted log lines
+        """
+        import time
+
+        lines = []
+        for tag, state in self.states.items():
+            if not state.fetches:
+                continue
+
+            errors = [f for f in state.fetches if f.error]
+            if errors:
+                for f in errors:
+                    lines.append(f"Fetch error [{tag}]: {f.error}")
+                continue
+
+            # Deduplicate by value
+            seen = set()
+            unique_fetches = []
+            for f in state.fetches:
+                val_key = str(f.value)
+                if val_key not in seen:
+                    seen.add(val_key)
+                    unique_fetches.append(f)
+
+            for f in unique_fetches:
+                ts = time.strftime("%H:%M:%S", time.localtime(f.timestamp)) if f.timestamp else "?"
+                val_str = str(f.value)[:60] if f.value else "None"
+                suffix = "..." if f.value and len(str(f.value)) > 60 else ""
+                lines.append(f"Fetch [{tag}] @{ts}: {val_str}{suffix}")
+
+        return lines

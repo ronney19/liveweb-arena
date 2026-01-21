@@ -8,7 +8,7 @@ from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
 from liveweb_arena.core.ground_truth_trigger import (
-    GroundTruthTrigger, UrlPatternTrigger, FetchStrategy
+    UrlPatternTrigger, FetchStrategy, TriggerConfig
 )
 from .variables import _fetch_active_subnet_ids, _fetch_subnet_name
 
@@ -244,4 +244,4 @@ class AnalysisTemplate(QuestionTemplate):
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
         """Analysis: LAST for multi-page analysis."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
-        return (trigger, FetchStrategy.LAST)
+        return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)
