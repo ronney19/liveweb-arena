@@ -108,6 +108,19 @@ class LLMClient:
                 log("LLM", f"Rate limit hit, attempt {attempt + 1}/{self.MAX_RETRIES}")
                 await self._backoff(attempt)
 
+            except openai.BadRequestError as e:
+                # Check for token limit errors - these are unrecoverable
+                error_msg = str(e).lower()
+                if "is longer than the model" in error_msg or "context_length_exceeded" in error_msg:
+                    log("LLM", f"Token limit exceeded - fatal error: {e}", force=True)
+                    raise LLMFatalError(
+                        f"Token limit exceeded: {e}",
+                        original_error=e,
+                        attempts=attempt + 1,
+                    )
+                # Other bad request errors - don't retry
+                raise
+
             except openai.APIStatusError as e:
                 if e.status_code in self.RETRY_STATUS_CODES:
                     last_error = e
@@ -122,6 +135,15 @@ class LLMClient:
                 await self._backoff(attempt)
 
             except Exception as e:
+                # Check for token limit in generic exceptions too
+                error_msg = str(e).lower()
+                if "is longer than the model" in error_msg or "context_length_exceeded" in error_msg:
+                    log("LLM", f"Token limit exceeded - fatal error: {e}", force=True)
+                    raise LLMFatalError(
+                        f"Token limit exceeded: {e}",
+                        original_error=e,
+                        attempts=attempt + 1,
+                    )
                 last_error = e
                 log("LLM", f"Error, attempt {attempt + 1}/{self.MAX_RETRIES}: {type(e).__name__}")
                 await self._backoff(attempt)

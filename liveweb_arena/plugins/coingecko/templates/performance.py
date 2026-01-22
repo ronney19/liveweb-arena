@@ -195,12 +195,10 @@ class CoinGeckoPerformanceTemplate(QuestionTemplate):
         if "compare" in perf_type:
             return """Task-Specific Rules (CoinGecko - 7-Day Performance Comparison):
 - Answer must identify which coin performed better over 7 days
-- Score 1.0: Correctly identifies the better performer
-- Score 0.5: Correct coin but percentage values off
+- Score 1.0: Correctly identifies the better performer (percentages within 2pp tolerance)
 - Score 0.0: Wrong coin identified as better performer
 - Accept formats: "Bitcoin", "BTC performed better", "Ethereum had less decline"
-- Note: "Better" = higher percentage (less negative or more positive)
-- Hint: Webpage shows "With a price decline of -X% in the last 7 days" """
+- Note: "Better" = higher percentage (less negative or more positive)"""
 
         return """Task-Specific Rules (CoinGecko - 7-Day Price Performance):
 - Performance is the 7-day percentage price change
