@@ -142,7 +142,7 @@ class TMDBMovieCrewTemplate(QuestionTemplate):
             variables={"movie": movie, "role": role},
             validation_info=validation_info,
             template_name=self.name,
-            expected_steps=8,  # May need to navigate to full crew page
+            expected_steps=12,  # Search + navigate + find crew section
         )
 
     def _build_question(

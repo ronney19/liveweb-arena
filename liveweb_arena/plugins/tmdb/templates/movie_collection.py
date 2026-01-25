@@ -167,7 +167,7 @@ class TMDBMovieCollectionTemplate(QuestionTemplate):
             variables={"movie": movie, "query_type": query_type},
             validation_info=validation_info,
             template_name=self.name,
-            expected_steps=10,  # Need to navigate to collection page
+            expected_steps=12,  # Search + navigate + find collection info
         )
 
     def _build_question(

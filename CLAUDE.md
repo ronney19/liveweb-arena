@@ -9,7 +9,7 @@
 5. **File Size** - Keep files under 500 lines
 6. **Import Style** - Use absolute imports for cross-package (`liveweb_arena.core.xxx`), relative for same package
 7. **Commit Rules** - Only commit when explicitly asked; keep messages concise
-8. **Template Testing** - Every new question template must be tested via `eval.py` with multiple seeds to verify the entire evaluation pipeline works correctly
+8. **Template Testing** - Every new question template must be tested via `eval.py` with multiple seeds to verify the entire evaluation pipeline works correctly. Use 10-minute timeout for evaluations.
 
 ## Template Design Guidelines
 
@@ -38,6 +38,7 @@ Fixed question pool + fixed answers = memorizable. Models can "cheat" by recalli
 - Target website must be publicly accessible without authentication
 - Required information must be visible on the page
 - Expected steps should be minimal for theoretical completion, with reasonable buffer (not extremely tight limits)
+- **NO navigation hints in questions** - Questions should only contain the question itself. No URLs, symbols, selectors, or any navigation shortcuts. Finding the correct source to get the answer is part of the agent's capability being tested.
 
 ### 4. Difficulty Stratification
 

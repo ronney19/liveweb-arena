@@ -203,31 +203,25 @@ class HybridConditionalBranchTemplate(QuestionTemplate):
         neutral: AssetSpec,
         rng: random.Random,
     ) -> str:
-        """Build the conditional question text with explicit Stooq symbols."""
-        # Include Stooq symbols in the question to avoid navigation confusion
-        def format_target(asset: AssetSpec) -> str:
-            if asset.source == "stooq":
-                return f"{asset.name} (stooq.com/q/?s={asset.symbol})"
-            return asset.name
-
+        """Build the conditional question text."""
         patterns = [
             (
-                f"Check {condition.name}'s 24-hour performance on CoinGecko. "
-                f"If it's up more than {threshold}%, report {format_target(positive)}'s current price. "
-                f"If it's down more than {threshold}%, report {format_target(negative)}'s current price. "
-                f"Otherwise, report {format_target(neutral)}'s 24-hour change."
+                f"Check {condition.name}'s 24-hour performance. "
+                f"If it's up more than {threshold}%, report {positive.name}'s current price. "
+                f"If it's down more than {threshold}%, report {negative.name}'s current price. "
+                f"Otherwise, report {neutral.name}'s 24-hour change."
             ),
             (
-                f"First, look up {condition.name}'s daily change on coingecko.com/en/coins/{condition.asset_id}. "
-                f"If {condition.name} gained over {threshold}% today, tell me {format_target(positive)}'s price. "
-                f"If {condition.name} lost over {threshold}% today, tell me {format_target(negative)}'s price. "
-                f"If neither, tell me how {format_target(neutral)} performed today (percentage)."
+                f"First, look up {condition.name}'s daily change. "
+                f"If {condition.name} gained over {threshold}% today, tell me {positive.name}'s stock price. "
+                f"If {condition.name} lost over {threshold}% today, tell me {negative.name}'s price. "
+                f"If neither, tell me how {neutral.name} performed today (percentage)."
             ),
             (
-                f"Based on {condition.name}'s 24h performance (check CoinGecko): "
-                f"(a) If up >{threshold}% → {format_target(positive)}'s price; "
-                f"(b) If down >{threshold}% → {format_target(negative)}'s price; "
-                f"(c) Otherwise → {format_target(neutral)}'s daily change percentage."
+                f"Based on {condition.name}'s 24h performance: "
+                f"(a) If up >{threshold}% → {positive.name}'s price; "
+                f"(b) If down >{threshold}% → {negative.name}'s price; "
+                f"(c) Otherwise → {neutral.name}'s daily change percentage."
             ),
         ]
         return rng.choice(patterns)

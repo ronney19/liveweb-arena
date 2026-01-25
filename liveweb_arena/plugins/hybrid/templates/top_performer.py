@@ -126,16 +126,9 @@ class HybridTopPerformerTemplate(QuestionTemplate):
         all_assets = selected_crypto + selected_traditional
         rng.shuffle(all_assets)  # Randomize order in question
 
-        # Build question with explicit URLs/symbols for navigation
-        def format_asset(asset: AssetSpec) -> str:
-            if asset.source == "coingecko":
-                return f"{asset.name} (coingecko.com/en/coins/{asset.asset_id})"
-            else:  # stooq
-                return f"{asset.name} (stooq.com/q/?s={asset.symbol})"
-
-        asset_names = [a.name for a in all_assets]  # For validation
-        asset_descs = [format_asset(a) for a in all_assets]
-        assets_str = ", ".join(asset_descs[:-1]) + f", or {asset_descs[-1]}"
+        # Build question with asset names only
+        asset_names = [a.name for a in all_assets]
+        assets_str = ", ".join(asset_names[:-1]) + f", or {asset_names[-1]}"
 
         pattern = rng.choice(self.PATTERNS)
         question_text = pattern.format(assets=assets_str)

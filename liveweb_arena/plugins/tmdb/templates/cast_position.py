@@ -76,7 +76,8 @@ class TMDBCastPositionTemplate(QuestionTemplate):
             variables={"movie": movie, "position": position},
             validation_info=validation_info,
             template_name=self.name,
-            expected_steps=8,
+            # Search movie (2-3) + navigate to page (1-2) + scroll/full cast (2-3) + count/extract (2) + submit (1)
+            expected_steps=15,
         )
 
     def _build_question(
