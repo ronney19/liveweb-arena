@@ -79,9 +79,15 @@ class CoinGeckoPlugin(BasePlugin):
         if not self._template_instances:
             raise ValueError("No templates available")
 
-        if template_name and template_name in self._template_instances:
-            selected_template_name = template_name
-        else:
+        # Normalize template name: accept both "comparison" and "coingecko_comparison"
+        selected_template_name = None
+        if template_name:
+            if template_name in self._template_instances:
+                selected_template_name = template_name
+            elif f"coingecko_{template_name}" in self._template_instances:
+                selected_template_name = f"coingecko_{template_name}"
+
+        if not selected_template_name:
             selected_template_name = rng.choice(list(self._template_instances.keys()))
         template = self._template_instances[selected_template_name]
 

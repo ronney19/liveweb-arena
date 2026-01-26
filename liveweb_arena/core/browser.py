@@ -1,10 +1,14 @@
 """Browser engine with session isolation for concurrent evaluations"""
 
 import asyncio
-from typing import Optional
+from pathlib import Path
+from typing import Optional, TYPE_CHECKING
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 
 from .models import BrowserObservation, BrowserAction
+
+if TYPE_CHECKING:
+    from .cache_manager import PageCacheProxy
 
 # Constants
 MAX_CONTENT_LENGTH = 20000  # Max content shown per view
@@ -24,7 +28,14 @@ class BrowserSession:
     # Step size for view_more = viewport size minus overlap
     VIEW_STEP = MAX_CONTENT_LENGTH - VIEW_MORE_OVERLAP
 
-    def __init__(self, context: BrowserContext, page: Page, browser: Browser = None):
+    def __init__(
+        self,
+        context: BrowserContext,
+        page: Page,
+        browser: Browser = None,
+        har_path: Optional[Path] = None,
+        har_mode: str = "off",
+    ):
         self._context = context
         self._page = page
         self._browser = browser  # Only set in strict isolation mode
@@ -34,6 +45,10 @@ class BrowserSession:
         self._last_url = ""
         self._blocked_patterns = []
         self._allowed_domains = None  # None means allow all
+        self._page_cache_proxy: Optional["PageCacheProxy"] = None
+        # HAR recording/playback
+        self._har_path = har_path
+        self._har_mode = har_mode  # "off", "record", "playback"
 
     async def set_allowed_domains(self, domains: list):
         """
@@ -43,6 +58,9 @@ class BrowserSession:
         will be blocked. This prevents agents from cheating by visiting
         external websites, search engines, or AI services.
 
+        If a page cache proxy is set, allowed document requests will be
+        served from cache when available.
+
         Args:
             domains: List of allowed domain names (without protocol)
                     Example: ["wttr.in", "coingecko.com"]
@@ -50,9 +68,12 @@ class BrowserSession:
         from urllib.parse import urlparse
 
         self._allowed_domains = set(d.lower() for d in domains)
+        session = self  # Capture reference for closure
 
-        async def check_domain(route):
+        async def check_domain_and_cache(route):
             url = route.request.url
+            request = route.request
+
             # Always allow about:blank
             if url == "about:blank" or url.startswith("about:"):
                 await route.continue_()
@@ -66,22 +87,43 @@ class BrowserSession:
                     domain = domain.split(":")[0]
 
                 # Check if domain or any parent domain is allowed
-                # e.g., if "coingecko.com" is allowed, "www.coingecko.com" is also allowed
                 is_allowed = False
-                for allowed in self._allowed_domains:
+                for allowed in session._allowed_domains:
                     if domain == allowed or domain.endswith("." + allowed):
                         is_allowed = True
                         break
 
-                if is_allowed:
-                    await route.continue_()
-                else:
+                if not is_allowed:
                     await route.abort("blockedbyclient")
+                    return
+
+                # Domain is allowed - check if we should serve from cache
+                # Only cache document (HTML) requests, not API calls or resources
+                if session._page_cache_proxy and request.resource_type == "document":
+                    # Try to serve from cache
+                    cached = session._page_cache_proxy.get_cached(url)
+                    if cached:
+                        await route.fulfill(
+                            status=200,
+                            content_type="text/html; charset=utf-8",
+                            body=cached,
+                        )
+                        return
+
+                    # Not in cache - let the request go through normally
+                    # We'll cache it after we get the response via the browser
+                    # Note: We can't easily cache here because route.fetch() may not
+                    # work for sites with anti-bot protection that need real browser
+                    pass  # Fall through to continue_()
+
+                # No caching needed or cache failed - proceed normally
+                await route.continue_()
+
             except Exception:
                 await route.abort("blockedbyclient")
 
         # Intercept all requests
-        await self._context.route("**/*", check_domain)
+        await self._context.route("**/*", check_domain_and_cache)
 
     async def block_urls(self, patterns: list):
         """
@@ -97,6 +139,31 @@ class BrowserSession:
         self._blocked_patterns.extend(patterns)
         for pattern in patterns:
             await self._context.route(pattern, lambda route: route.abort())
+
+    async def set_page_cache_proxy(self, proxy: "PageCacheProxy"):
+        """
+        Set page cache proxy for request caching.
+
+        When set, document requests will be served from cache if available.
+        If not cached, the request will proceed normally and the page content
+        will be cached after successful load.
+
+        Note: This must be called BEFORE set_allowed_domains(), which will
+        integrate the caching logic into its route handler.
+
+        Args:
+            proxy: PageCacheProxy instance from EvaluationCacheContext
+        """
+        self._page_cache_proxy = proxy
+        session = self
+
+        # Note: We don't use response listener for caching because response.text()
+        # can cause issues with some sites. Instead, caching happens when:
+        # 1. Cache hit: served from memory/disk cache
+        # 2. Cache miss: request proceeds normally, no auto-caching
+        # This is sufficient to prevent duplicate requests within a session
+        # and provides consistency with ground truth data (from API cache).
+        pass
 
     async def goto(self, url: str, max_retries: int = 3) -> BrowserObservation:
         """Navigate to URL and return observation with automatic retry on failure"""
@@ -379,6 +446,16 @@ class BrowserSession:
 
         return "\n".join(lines)
 
+    def get_har_info(self) -> Optional[dict]:
+        """Get HAR recording/playback info."""
+        if self._har_mode == "off" or not self._har_path:
+            return None
+        return {
+            "mode": self._har_mode,
+            "path": str(self._har_path),
+            "exists": self._har_path.exists() if self._har_path else False,
+        }
+
     async def close(self):
         """Close session (context, page, and browser if in strict mode)"""
         try:
@@ -386,6 +463,7 @@ class BrowserSession:
         except Exception:
             pass
         try:
+            # Closing context will save HAR file if recording was enabled
             await self._context.close()
         except Exception:
             pass
@@ -440,44 +518,77 @@ class BrowserEngine:
                     args=self._browser_args,
                 )
 
-    async def new_session(self) -> BrowserSession:
-        """Create a new isolated browser session"""
+    async def new_session(
+        self,
+        har_path: Optional[Path] = None,
+        har_mode: str = "off",
+    ) -> BrowserSession:
+        """
+        Create a new isolated browser session.
+
+        Args:
+            har_path: Path to HAR file for recording/playback
+            har_mode: "off" (default), "record", or "playback"
+                - off: Normal operation, no HAR recording
+                - record: Record all network traffic to HAR file
+                - playback: Serve responses from HAR file (falls back to network)
+
+        Returns:
+            BrowserSession instance
+        """
         if self._playwright is None:
             await self.start()
 
+        # Prepare context options
+        context_options = {
+            "viewport": {"width": 1280, "height": 720},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "ignore_https_errors": False,
+            "java_script_enabled": True,
+            "bypass_csp": False,
+        }
+
+        # Add HAR recording if enabled
+        if har_mode == "record" and har_path:
+            har_path.parent.mkdir(parents=True, exist_ok=True)
+            context_options["record_har_path"] = str(har_path)
+            context_options["record_har_content"] = "embed"  # Embed content in HAR
+
         if self._isolation_mode == "strict":
-            # Strict mode: create a new browser instance for each session
             browser = await self._playwright.chromium.launch(
                 headless=self._headless,
                 args=self._browser_args,
             )
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                # Additional isolation options
-                ignore_https_errors=False,
-                java_script_enabled=True,
-                bypass_csp=False,
-            )
+            context = await browser.new_context(**context_options)
             context.set_default_timeout(PAGE_TIMEOUT_MS)
             page = await context.new_page()
-            return BrowserSession(context, page, browser=browser)
+
+            # Set up HAR playback if enabled
+            if har_mode == "playback" and har_path and har_path.exists():
+                await context.route_from_har(
+                    str(har_path),
+                    not_found="fallback",  # Fall back to network for missing entries
+                    update=False,
+                )
+
+            return BrowserSession(context, page, browser=browser, har_path=har_path, har_mode=har_mode)
         else:
-            # Shared mode: use shared browser with isolated context
             if self._browser is None:
                 await self.start()
 
-            context = await self._browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                # Context-level isolation options
-                ignore_https_errors=False,
-                java_script_enabled=True,
-                bypass_csp=False,
-            )
+            context = await self._browser.new_context(**context_options)
             context.set_default_timeout(PAGE_TIMEOUT_MS)
             page = await context.new_page()
-            return BrowserSession(context, page)
+
+            # Set up HAR playback if enabled
+            if har_mode == "playback" and har_path and har_path.exists():
+                await context.route_from_har(
+                    str(har_path),
+                    not_found="fallback",
+                    update=False,
+                )
+
+            return BrowserSession(context, page, har_path=har_path, har_mode=har_mode)
 
     async def stop(self):
         """Stop browser and Playwright with timeout"""

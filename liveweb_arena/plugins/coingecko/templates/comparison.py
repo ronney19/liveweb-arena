@@ -123,14 +123,24 @@ class CoinGeckoComparisonTemplate(QuestionTemplate):
 
             # Get comparison values
             if comp_type == "price":
-                val1 = coin1_data.get("current_price", 0)
-                val2 = coin2_data.get("current_price", 0)
+                val1 = coin1_data.get("current_price")
+                val2 = coin2_data.get("current_price")
+                if val1 is None or val2 is None:
+                    return GroundTruthResult.fail(f"Missing price data: {coin1_name}={val1}, {coin2_name}={val2}")
             elif comp_type == "market_cap":
-                val1 = coin1_data.get("market_cap", 0)
-                val2 = coin2_data.get("market_cap", 0)
+                val1 = coin1_data.get("market_cap")
+                val2 = coin2_data.get("market_cap")
+                # market_cap can be 0 or None for some coins (e.g., no circulating supply data)
+                if val1 is None or val2 is None or val1 == 0 or val2 == 0:
+                    return GroundTruthResult.fail(
+                        f"Invalid market cap data: {coin1_name}={val1}, {coin2_name}={val2}. "
+                        "Some coins lack circulating supply data."
+                    )
             else:  # volume
-                val1 = coin1_data.get("total_volume", 0)
-                val2 = coin2_data.get("total_volume", 0)
+                val1 = coin1_data.get("total_volume")
+                val2 = coin2_data.get("total_volume")
+                if val1 is None or val2 is None:
+                    return GroundTruthResult.fail(f"Missing volume data: {coin1_name}={val1}, {coin2_name}={val2}")
 
             if val1 > val2:
                 return GroundTruthResult.ok(f"{coin1_name} (${val1:,.2f} vs ${val2:,.2f})")

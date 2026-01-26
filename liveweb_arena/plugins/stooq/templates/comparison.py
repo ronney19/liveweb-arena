@@ -60,6 +60,11 @@ class StooqComparisonTemplate(QuestionTemplate):
             "Compare the daily performance of {instruments}. Which lost the most?",
             "Among {instruments}, which had the worst performance today?",
         ],
+        ComparisonType.HIGHER_VOLUME: [
+            "Which has higher trading volume today: {instruments}?",
+            "Compare the trading volumes of {instruments}. Which was traded more?",
+            "Among {instruments}, which has the highest trading volume?",
+        ],
     }
 
     def __init__(self):

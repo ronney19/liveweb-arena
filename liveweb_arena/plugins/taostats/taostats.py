@@ -79,10 +79,15 @@ class TaostatsPlugin(BasePlugin):
         if not self._template_instances:
             raise ValueError("No templates available")
 
-        # Select template
-        if template_name and template_name in self._template_instances:
-            selected_template_name = template_name
-        else:
+        # Normalize template name: accept both "price" and "taostats_price"
+        selected_template_name = None
+        if template_name:
+            if template_name in self._template_instances:
+                selected_template_name = template_name
+            elif f"taostats_{template_name}" in self._template_instances:
+                selected_template_name = f"taostats_{template_name}"
+
+        if not selected_template_name:
             selected_template_name = rng.choice(list(self._template_instances.keys()))
 
         template = self._template_instances[selected_template_name]

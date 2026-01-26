@@ -2,12 +2,13 @@
 
 import asyncio
 import random
+import time
 from typing import Optional, Tuple
 
 import httpx
 import openai
 
-from .logger import log
+from .logger import log, progress, progress_done, is_verbose
 
 
 class LLMFatalError(Exception):
@@ -188,12 +189,14 @@ class LLMClient:
             params["seed"] = seed
 
         # Make streaming request
+        start_time = time.time()
         stream = await client.chat.completions.create(**params)
 
         # Collect streamed content and usage
         content_parts = []
         usage = None
         chunk_count = 0
+        last_progress = 0
 
         async for chunk in stream:
             chunk_count += 1
@@ -202,9 +205,17 @@ class LLMClient:
             if chunk.usage:
                 usage = chunk.usage.model_dump()
 
+            # Update progress every second
+            elapsed = time.time() - start_time
+            if is_verbose() and elapsed - last_progress >= 1.0:
+                last_progress = elapsed
+                progress("LLM", elapsed, timeout_s, f"chunks:{chunk_count}")
+
+        if is_verbose() and last_progress > 0:
+            progress_done("LLM", f"Done in {time.time()-start_time:.1f}s, {chunk_count} chunks")
+
         content = "".join(content_parts)
         if not content:
-            # More descriptive error for debugging
             raise ValueError(f"LLM returned empty response after {chunk_count} chunks")
 
         return content.strip(), usage

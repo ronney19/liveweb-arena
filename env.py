@@ -61,7 +61,21 @@ class Actor:
 
         Args:
             api_key: API key for LLM service. Falls back to CHUTES_API_KEY env var.
-            use_cache: Whether to use caching for API data (default: True)
+            use_cache: Whether to use caching (default: True)
+
+        Operating Modes:
+            use_cache=True (Cache Mode):
+                - API data: served from cache (refreshed every TTL seconds)
+                - Web pages: served from HAR cache (recorded per seed + API version)
+                - Benefit: Consistent data between agent view and ground truth
+                - Benefit: Reduced website access (prevents IP blocking)
+                - Benefit: Reproducible evaluations
+
+            use_cache=False (Live Mode):
+                - API data: fetched in real-time from live APIs
+                - Web pages: fetched in real-time from live websites
+                - Use case: Testing against current live data
+                - Risk: Data may differ between agent view and ground truth fetch
         """
         self.api_key = api_key or os.getenv("CHUTES_API_KEY")
         self.browser: Optional[BrowserEngine] = None
@@ -197,15 +211,87 @@ class Actor:
             effective_max_steps = max(max_steps, total_expected_steps)
         log("Actor", f"Max steps: {effective_max_steps} (from {len(task.subtasks)} subtasks)")
 
-        # Create isolated browser session
-        session = await self.browser.new_session()
-
         # Collect allowed domains from all plugins (whitelist)
         allowed_domains = set()
         for subtask in task.subtasks:
             plugin = self.task_manager.get_plugin(subtask.plugin_name)
             if plugin and hasattr(plugin, 'allowed_domains'):
                 allowed_domains.update(plugin.allowed_domains)
+
+        # Determine which cache sources are needed based on plugins
+        cache_sources = []
+        for subtask in task.subtasks:
+            plugin_name = subtask.plugin_name
+            if plugin_name == "hybrid":
+                cache_sources.extend(["coingecko", "stooq"])
+            elif plugin_name == "coingecko":
+                cache_sources.append("coingecko")
+            elif plugin_name == "stooq":
+                cache_sources.append("stooq")
+            elif plugin_name == "weather":
+                cache_sources.append("weather")
+            elif plugin_name == "tmdb":
+                cache_sources.append("tmdb")
+            # Note: taostats uses live API, no caching needed
+        cache_sources = list(set(cache_sources))  # Dedupe
+
+        # Initialize cache mode variables
+        cache_context = None
+        har_path = None
+        har_mode = "off"
+
+        # Set up caching based on mode
+        if self.use_cache:
+            # ===== CACHE MODE =====
+            # Both API and web page (HAR) caching enabled
+            # Ensures consistency: agent sees same data as ground truth
+            log("Actor", "Mode: CACHE (API + HAR)")
+
+            if cache_sources:
+                try:
+                    cache_manager = get_cache_manager()
+                    cache_context = EvaluationCacheContext(
+                        cache_manager=cache_manager,
+                        sources=cache_sources,
+                        ensure_fresh=True,
+                    )
+                    await cache_context.__aenter__()
+
+                    # Set cache context for all API modules
+                    set_cache_context(cache_context)
+                    set_coingecko_cache_context(cache_context)
+                    set_stooq_cache_context(cache_context)
+                    set_weather_cache_context(cache_context)
+                    set_tmdb_cache_context(cache_context)
+
+                    cached = [s for s, v in cache_context.locked_versions.items() if v]
+                    log("Actor", f"API cache: {cached}")
+
+                    # Get HAR cache info (paired with API cache version, seed-independent)
+                    har_path, har_mode = cache_context.get_har_cache_info()
+                    log("Actor", f"HAR cache: {har_mode} -> {har_path.name if har_path else 'N/A'}")
+
+                    # Acquire lock for recording (prevent concurrent writes)
+                    if har_mode == "record":
+                        if not cache_context.acquire_har_lock(har_path):
+                            log("Actor", "HAR lock busy - waiting for other recording")
+                            har_path = None
+                            har_mode = "off"
+
+                except Exception as e:
+                    log("Actor", f"Cache setup failed: {e}, falling back to live mode")
+                    cache_context = None
+                    har_path = None
+                    har_mode = "off"
+        else:
+            # ===== LIVE MODE =====
+            # No caching - all data fetched in real-time
+            log("Actor", "Mode: LIVE (real-time API + web)")
+
+        # Create browser session with HAR caching
+        session = await self.browser.new_session(har_path=har_path, har_mode=har_mode)
+
+        # Set allowed domains
         if allowed_domains:
             await session.set_allowed_domains(list(allowed_domains))
             log("Actor", f"Allowed domains: {sorted(allowed_domains)}")
@@ -222,41 +308,6 @@ class Actor:
 
         try:
             llm_client = LLMClient(base_url=base_url, api_key=api_key)
-
-            # Determine which cache sources are needed based on plugins
-            cache_sources = []
-            for subtask in task.subtasks:
-                plugin_name = subtask.plugin_name
-                if plugin_name == "hybrid":
-                    cache_sources.extend(["coingecko", "stooq"])
-                elif plugin_name == "coingecko":
-                    cache_sources.append("coingecko")
-                elif plugin_name == "stooq":
-                    cache_sources.append("stooq")
-            cache_sources = list(set(cache_sources))  # Dedupe
-
-            # Set up cache context if caching is enabled
-            cache_context = None
-            if self.use_cache and cache_sources:
-                try:
-                    cache_manager = get_cache_manager()
-                    cache_context = EvaluationCacheContext(
-                        cache_manager=cache_manager,
-                        sources=cache_sources,
-                        ensure_fresh=True,
-                    )
-                    await cache_context.__aenter__()
-                    # Set cache context for all modules
-                    set_cache_context(cache_context)
-                    set_coingecko_cache_context(cache_context)
-                    set_stooq_cache_context(cache_context)
-                    set_weather_cache_context(cache_context)
-                    set_tmdb_cache_context(cache_context)
-                    cached = [s for s, v in cache_context.locked_versions.items() if v]
-                    log("Actor", f"Cache context initialized for: {cached}")
-                except Exception as e:
-                    log("Actor", f"Cache initialization failed: {e}, continuing without cache")
-                    cache_context = None
 
             # Set up GroundTruthManager for triggered fetching
             gt_manager = GroundTruthManager(task_manager=self.task_manager)
@@ -404,6 +455,33 @@ class Actor:
             return result
 
         finally:
+            # Log HAR info before closing session
+            har_info = session.get_har_info()
+            if har_info:
+                log("Actor", f"HAR cache: mode={har_info['mode']}, saved={har_info['path']}")
+
+            # Always close the session (this saves HAR file if recording)
+            await session.close()
+
+            # Post-recording validation and lock release
+            if har_mode == "record" and har_path and cache_context:
+                # Release the recording lock
+                cache_context.release_har_lock(har_path)
+
+                # Validate the recorded HAR file
+                if har_path.exists():
+                    if cache_context._validate_har_file(har_path):
+                        size_kb = har_path.stat().st_size / 1024
+                        log("Actor", f"HAR recording validated: {size_kb:.1f} KB")
+                    else:
+                        log("Actor", "HAR recording invalid or incomplete - will re-record on next run")
+                        try:
+                            har_path.unlink()
+                        except OSError:
+                            pass
+                else:
+                    log("Actor", "HAR recording failed - file not created")
+
             # Clean up cache context
             if cache_context is not None:
                 await cache_context.__aexit__(None, None, None)
@@ -412,8 +490,6 @@ class Actor:
                 set_stooq_cache_context(None)
                 set_weather_cache_context(None)
                 set_tmdb_cache_context(None)
-            # Always close the session
-            await session.close()
 
     async def _fetch_ground_truths_with_retry(
         self,

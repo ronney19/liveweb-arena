@@ -5,6 +5,9 @@ Each adapter knows how to:
 1. Fetch all relevant API data for a source
 2. Fetch all relevant web pages for a source
 3. Map between URLs and cache keys
+
+IMPORTANT: Cache adapters import their entity lists directly from plugin variables.
+This ensures the cached entities always match what templates can generate.
 """
 
 import asyncio
@@ -18,6 +21,52 @@ from .cache_manager import CacheManager, get_cache_manager
 logger = logging.getLogger(__name__)
 
 
+def _get_coingecko_coins() -> List[str]:
+    """Get coin IDs from CoinGecko plugin variables."""
+    try:
+        from liveweb_arena.plugins.coingecko.templates.price import CoinVariable
+        return [coin.coin_id for coin in CoinVariable.COINS]
+    except ImportError:
+        logger.warning("Could not import CoinGecko variables, using fallback")
+        return ["bitcoin", "ethereum", "solana"]
+
+
+def _get_stooq_assets() -> List[str]:
+    """Get asset symbols from Stooq plugin variables."""
+    try:
+        from liveweb_arena.plugins.stooq.templates.variables import (
+            US_STOCKS, INDICES, CURRENCIES, COMMODITIES
+        )
+        assets = []
+        assets.extend([s.symbol for s in US_STOCKS])
+        assets.extend([i.symbol for i in INDICES])
+        assets.extend([c.symbol for c in CURRENCIES])
+        assets.extend([c.symbol for c in COMMODITIES])
+        return assets
+    except ImportError:
+        logger.warning("Could not import Stooq variables, using fallback")
+        return ["^spx", "^dji", "aapl.us", "msft.us"]
+
+
+def _get_weather_locations() -> List[str]:
+    """Get location queries from Weather plugin variables."""
+    try:
+        from liveweb_arena.plugins.weather.templates.variables import LocationVariable
+        locations = []
+        # Add all cities from CITY_SEEDS
+        for region, cities in LocationVariable.CITY_SEEDS.items():
+            for city, country in cities:
+                # Format: City,Country with spaces replaced by +
+                query = f"{city},{country}".replace(" ", "+")
+                locations.append(query)
+        # Add airport codes
+        locations.extend(LocationVariable.AIRPORT_CODES)
+        return locations
+    except ImportError:
+        logger.warning("Could not import Weather variables, using fallback")
+        return ["Tokyo,Japan", "New+York,USA", "London,UK"]
+
+
 class CoinGeckoCacheAdapter:
     """
     Cache adapter for CoinGecko.
@@ -25,22 +74,17 @@ class CoinGeckoCacheAdapter:
     Caches:
     - Market data for top coins (prices, 24h change, market cap, etc.)
     - Coin detail pages
+
+    NOTE: Coin list is imported from plugin variables to ensure consistency.
     """
 
     SOURCE = "coingecko"
     API_BASE = "https://api.coingecko.com/api/v3"
 
-    # Top coins to cache (by market cap)
-    CACHED_COINS = [
-        "bitcoin", "ethereum", "tether", "binancecoin", "solana",
-        "ripple", "usd-coin", "cardano", "dogecoin", "tron",
-        "avalanche-2", "polkadot", "chainlink", "litecoin", "bitcoin-cash",
-        "uniswap", "stellar", "cosmos", "near", "aptos",
-        "sui", "bittensor", "internet-computer", "filecoin", "hedera",
-    ]
-
     def __init__(self, cache_manager: CacheManager = None):
         self.cache = cache_manager or get_cache_manager()
+        # Import coins from plugin variables (single source of truth)
+        self.cached_coins = _get_coingecko_coins()
         self._register_fetchers()
 
     def _register_fetchers(self):
@@ -53,14 +97,14 @@ class CoinGeckoCacheAdapter:
 
     async def _fetch_all_api_data(self) -> Dict[str, Any]:
         """Fetch all coin market data from CoinGecko API."""
-        logger.info("Fetching CoinGecko market data...")
+        logger.info(f"Fetching CoinGecko market data for {len(self.cached_coins)} coins...")
 
         try:
             async with aiohttp.ClientSession() as session:
                 # Fetch market data for all cached coins
                 params = {
                     "vs_currency": "usd",
-                    "ids": ",".join(self.CACHED_COINS),
+                    "ids": ",".join(self.cached_coins),
                     "order": "market_cap_desc",
                     "per_page": 100,
                     "page": 1,
@@ -121,26 +165,18 @@ class StooqCacheAdapter:
     Cache adapter for Stooq.
 
     Caches:
-    - Price data for stocks, indices, commodities
+    - Price data for stocks, indices, currencies, commodities
+
+    NOTE: Asset list is imported from plugin variables to ensure consistency.
     """
 
     SOURCE = "stooq"
     CSV_URL = "https://stooq.com/q/d/l/"
 
-    # Assets to cache
-    CACHED_ASSETS = [
-        # Indices
-        "^spx", "^dji", "^ndx", "^dax", "^ukx", "^nkx",
-        # Commodities (using forex-style symbols that work on Stooq)
-        "xauusd", "xagusd",  # Gold, Silver in USD
-        # US Stocks
-        "aapl.us", "msft.us", "nvda.us", "tsla.us", "googl.us",
-        "amzn.us", "meta.us", "jpm.us", "v.us", "wmt.us",
-        "coin.us", "amd.us", "tlt.us",
-    ]
-
     def __init__(self, cache_manager: CacheManager = None):
         self.cache = cache_manager or get_cache_manager()
+        # Import assets from plugin variables (single source of truth)
+        self.cached_assets = _get_stooq_assets()
         self._register_fetchers()
 
     def _register_fetchers(self):
@@ -153,7 +189,7 @@ class StooqCacheAdapter:
 
     async def _fetch_all_api_data(self) -> Dict[str, Any]:
         """Fetch price data for all cached assets from Stooq."""
-        logger.info("Fetching Stooq price data...")
+        logger.info(f"Fetching Stooq price data for {len(self.cached_assets)} assets...")
 
         result = {
             "_meta": {
@@ -163,18 +199,26 @@ class StooqCacheAdapter:
             "assets": {},
         }
 
-        # Semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(5)
+        # Semaphore to limit concurrent requests (reduced to avoid rate limits)
+        semaphore = asyncio.Semaphore(2)
+        rate_limited = False
 
         async def fetch_one(session: aiohttp.ClientSession, symbol: str):
             """Fetch data for a single symbol."""
+            nonlocal rate_limited
+            if rate_limited:
+                return None
+
             async with semaphore:
+                # Add delay between requests to avoid rate limiting
+                await asyncio.sleep(0.5)
+
                 try:
                     params = {"s": symbol, "i": "d"}
                     async with session.get(
                         self.CSV_URL,
                         params=params,
-                        timeout=aiohttp.ClientTimeout(total=10),
+                        timeout=aiohttp.ClientTimeout(total=15),
                     ) as response:
                         if response.status != 200:
                             logger.warning(f"Stooq error for {symbol}: {response.status}")
@@ -182,10 +226,17 @@ class StooqCacheAdapter:
 
                         csv_text = await response.text()
 
+                    # Check for rate limit error
+                    if "Exceeded the daily hits limit" in csv_text:
+                        logger.error(f"Stooq rate limit exceeded - stopping all requests")
+                        rate_limited = True
+                        return None
+
                     # Parse CSV (handle both Windows and Unix line endings)
                     csv_text = csv_text.replace("\r\n", "\n").replace("\r", "\n")
                     lines = csv_text.strip().split("\n")
                     if len(lines) < 2:
+                        logger.warning(f"Stooq {symbol}: insufficient data lines ({len(lines)})")
                         return None
 
                     # Get headers and last row
@@ -229,11 +280,11 @@ class StooqCacheAdapter:
 
         async with aiohttp.ClientSession() as session:
             # Fetch all in parallel with concurrency limit
-            tasks = [fetch_one(session, symbol) for symbol in self.CACHED_ASSETS]
+            tasks = [fetch_one(session, symbol) for symbol in self.cached_assets]
             results = await asyncio.gather(*tasks)
 
             # Collect successful results
-            for symbol, data in zip(self.CACHED_ASSETS, results):
+            for symbol, data in zip(self.cached_assets, results):
                 if data:
                     result["assets"][symbol] = data
 
@@ -263,42 +314,17 @@ class WeatherCacheAdapter:
     Caches:
     - Weather data for major world cities
     - Airport locations
+
+    NOTE: Location list is imported from plugin variables to ensure consistency.
     """
 
     SOURCE = "weather"
     API_BASE = "https://wttr.in"
 
-    # Cities to cache (from weather plugin variables)
-    CACHED_LOCATIONS = [
-        # Asia
-        "Tokyo,Japan", "Beijing,China", "Seoul,South+Korea",
-        "Mumbai,India", "Singapore,Singapore", "Bangkok,Thailand",
-        "Hong+Kong,China", "Shanghai,China", "Delhi,India",
-        "Jakarta,Indonesia", "Manila,Philippines", "Osaka,Japan",
-        # Europe
-        "London,UK", "Paris,France", "Berlin,Germany",
-        "Madrid,Spain", "Rome,Italy", "Amsterdam,Netherlands",
-        "Vienna,Austria", "Prague,Czech+Republic", "Stockholm,Sweden",
-        "Warsaw,Poland", "Brussels,Belgium", "Zurich,Switzerland",
-        # Americas
-        "New+York,USA", "Los+Angeles,USA", "Chicago,USA",
-        "Toronto,Canada", "Mexico+City,Mexico", "Sao+Paulo,Brazil",
-        "Buenos+Aires,Argentina", "Miami,USA", "Seattle,USA",
-        "Vancouver,Canada", "Houston,USA", "Boston,USA",
-        # Oceania
-        "Sydney,Australia", "Melbourne,Australia", "Auckland,New+Zealand",
-        "Brisbane,Australia", "Perth,Australia", "Wellington,New+Zealand",
-        # Africa & Middle East
-        "Dubai,UAE", "Cairo,Egypt", "Johannesburg,South+Africa",
-        "Tel+Aviv,Israel", "Istanbul,Turkey", "Lagos,Nigeria",
-        "Casablanca,Morocco", "Nairobi,Kenya",
-        # Airport codes
-        "JFK", "LAX", "LHR", "CDG", "FRA", "AMS", "DXB", "SIN",
-        "HKG", "NRT", "ICN", "PEK", "SYD", "MEL", "YYZ", "ORD",
-    ]
-
     def __init__(self, cache_manager: CacheManager = None):
         self.cache = cache_manager or get_cache_manager()
+        # Import locations from plugin variables (single source of truth)
+        self.cached_locations = _get_weather_locations()
         self._register_fetchers()
 
     def _register_fetchers(self):
@@ -311,7 +337,7 @@ class WeatherCacheAdapter:
 
     async def _fetch_all_api_data(self) -> Dict[str, Any]:
         """Fetch weather data for all cached locations."""
-        logger.info("Fetching weather data for cached locations...")
+        logger.info(f"Fetching weather data for {len(self.cached_locations)} locations...")
 
         result = {
             "_meta": {
@@ -346,10 +372,10 @@ class WeatherCacheAdapter:
                     return None
 
         async with aiohttp.ClientSession() as session:
-            tasks = [fetch_one(session, loc) for loc in self.CACHED_LOCATIONS]
+            tasks = [fetch_one(session, loc) for loc in self.cached_locations]
             results = await asyncio.gather(*tasks)
 
-            for location, data in zip(self.CACHED_LOCATIONS, results):
+            for location, data in zip(self.cached_locations, results):
                 if data:
                     result["locations"][location] = data
 
