@@ -10,6 +10,7 @@ from liveweb_arena.core.validators.validators import NumericToleranceValidator, 
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
+from liveweb_arena.utils.logger import log
 from .variables import SubnetVariable, MetricVariable, SubnetSpec, MetricSpec, SubnetMetric
 
 
@@ -123,12 +124,46 @@ Agent should click the address to get the full address from the URL or account p
 - Score 0.0: Values differ significantly"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch ground truth from Bittensor network via Python SDK"""
+        """Fetch ground truth from cache or Bittensor network via Python SDK"""
+        subnet_id = validation_info["subnet_id"]
+        metric = validation_info["metric"]
+
+        # Try cache first
+        from liveweb_arena.core.snapshot_cache import get_snapshot_cache_manager
+
+        try:
+            manager = get_snapshot_cache_manager()
+            snapshot = manager.get_current_snapshot()
+            if snapshot:
+                api_data = snapshot.get_api_data("taostats")
+                if api_data:
+                    subnets = api_data.get("subnets", {})
+                    subnet_data = subnets.get(str(subnet_id))
+                    if subnet_data:
+                        if metric == "name" and "name" in subnet_data:
+                            log("GT", f"CACHE HIT - Taostats subnet {subnet_id}: name", force=True)
+                            return GroundTruthResult.ok(subnet_data["name"])
+                        elif metric == "owner" and "owner" in subnet_data:
+                            log("GT", f"CACHE HIT - Taostats subnet {subnet_id}: owner", force=True)
+                            return GroundTruthResult.ok(subnet_data["owner"])
+                        elif metric == "price" and "price" in subnet_data:
+                            log("GT", f"CACHE HIT - Taostats subnet {subnet_id}: price", force=True)
+                            return GroundTruthResult.ok(f"τ{subnet_data['price']:.6f}")
+
+                    # Cache mode but subnet not found
+                    log("GT", f"CACHE MISS - Taostats subnet {subnet_id} not in cache ({len(subnets)} subnets cached)", force=True)
+                    return GroundTruthResult.fail(f"Subnet {subnet_id} not in cache")
+                else:
+                    log("GT", "Taostats api_data empty - rebuild cache with --force", force=True)
+                    return GroundTruthResult.fail("Taostats api_data empty")
+            # No snapshot - fall through to live API
+        except Exception as e:
+            log("GT", f"CACHE ERROR - Taostats: {e}", force=True)
+            return GroundTruthResult.fail(f"Cache error: {e}")
+
+        # No cache - fall back to live Bittensor network (non-cache mode)
         try:
             import bittensor as bt
-
-            subnet_id = validation_info["subnet_id"]
-            metric = validation_info["metric"]
 
             # Connect to Bittensor network
             subtensor = bt.Subtensor(network="finney")
@@ -210,3 +245,20 @@ Agent should click the address to get the full address from the URL or account p
             ),
             strategy=FetchStrategy.FIRST,
         )
+
+    # === Cache Registration Methods ===
+
+    @classmethod
+    def get_cache_source(cls) -> str:
+        """Return the cache source name for this template."""
+        return "taostats"
+
+    @classmethod
+    def get_cache_urls(cls) -> List[str]:
+        """Generate URLs to cache based on subnet IDs."""
+        urls = ["https://taostats.io/subnets"]
+        # Add all subnet pages (0-128 range to cover all possible subnets)
+        for subnet_id in range(129):
+            urls.append(f"https://taostats.io/subnets/{subnet_id}")
+        return urls
+

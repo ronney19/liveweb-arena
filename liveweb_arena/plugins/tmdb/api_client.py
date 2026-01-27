@@ -3,11 +3,16 @@
 import os
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from liveweb_arena.utils.logger import log
+
 logger = logging.getLogger(__name__)
+
+# Cache source name
+CACHE_SOURCE = "tmdb"
 
 # Global cache context reference (set by env.py during evaluation)
 _cache_context: Optional[Any] = None
@@ -135,11 +140,15 @@ class TMDBClient:
                 movies = api_data.get("movies", {})
                 movie_data = movies.get(str(movie_id))
                 if movie_data:
-                    logger.debug(f"Cache hit: TMDB movie {movie_id}")
+                    log("GT", f"CACHE HIT - TMDB movie: {movie_id}", force=True)
                     # Return movie info without credits
                     return {k: v for k, v in movie_data.items() if k != "credits"}
-                logger.debug(f"Cache miss for TMDB movie {movie_id}, falling back to API")
 
+                # Cache mode but data not found - this is an error
+                log("GT", f"CACHE MISS - TMDB movie: {movie_id} not in cache ({len(movies)} movies cached)", force=True)
+                return None
+
+        # No cache context - use live API
         return await cls.get(f"/movie/{movie_id}")
 
     @classmethod
@@ -161,10 +170,14 @@ class TMDBClient:
                 movies = api_data.get("movies", {})
                 movie_data = movies.get(str(movie_id))
                 if movie_data and "credits" in movie_data:
-                    logger.debug(f"Cache hit: TMDB credits {movie_id}")
+                    log("GT", f"CACHE HIT - TMDB credits: {movie_id}", force=True)
                     return movie_data["credits"]
-                logger.debug(f"Cache miss for TMDB credits {movie_id}, falling back to API")
 
+                # Cache mode but data not found - this is an error
+                log("GT", f"CACHE MISS - TMDB credits: {movie_id} not in cache ({len(movies)} movies cached)", force=True)
+                return None
+
+        # No cache context - use live API
         return await cls.get(f"/movie/{movie_id}/credits")
 
     @classmethod
@@ -186,8 +199,157 @@ class TMDBClient:
                 movies = api_data.get("movies", {})
                 movie_data = movies.get(str(movie_id))
                 if movie_data and "credits" in movie_data:
-                    logger.debug(f"Cache hit: TMDB movie+credits {movie_id}")
+                    log("GT", f"CACHE HIT - TMDB movie+credits: {movie_id}", force=True)
                     return movie_data
-                logger.debug(f"Cache miss for TMDB movie+credits {movie_id}, falling back to API")
 
+                # Cache mode but data not found - this is an error
+                log("GT", f"CACHE MISS - TMDB movie+credits: {movie_id} not in cache ({len(movies)} movies cached)", force=True)
+                return None
+
+        # No cache context - use live API
         return await cls.get(f"/movie/{movie_id}", params={"append_to_response": "credits"})
+
+
+# ============================================================
+# Cache Data Fetcher (used by snapshot_integration)
+# ============================================================
+
+async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
+    """
+    Fetch TMDB movie data for all movies defined in variables.
+
+    Returns data structure:
+    {
+        "_meta": {"source": "tmdb", "movie_count": N},
+        "movies": {
+            "872585": {
+                "id": 872585,
+                "title": "Oppenheimer",
+                ...
+                "credits": {"cast": [...], "crew": [...]}
+            },
+            ...
+        }
+    }
+    """
+    from .templates.variables import MovieVariable
+
+    api_key = TMDBClient.get_api_key()
+    if not api_key:
+        logger.warning("TMDB_API_KEY not set, skipping TMDB cache")
+        return {"_meta": {"source": CACHE_SOURCE, "movie_count": 0}, "movies": {}}
+
+    movies_list = MovieVariable.MOVIES
+    logger.info(f"Fetching TMDB data for {len(movies_list)} movies...")
+
+    result = {
+        "_meta": {"source": CACHE_SOURCE, "movie_count": 0},
+        "movies": {},
+    }
+    failed = 0
+
+    # Rate limit: 4 requests per second (TMDB limit is 40 per 10 sec)
+    semaphore = asyncio.Semaphore(4)
+
+    async def fetch_movie(movie):
+        nonlocal failed
+        async with semaphore:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    url = f"https://api.themoviedb.org/3/movie/{movie.movie_id}"
+                    headers = TMDBClient.get_headers()
+                    params = {"append_to_response": "credits"}
+
+                    async with session.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as response:
+                        if response.status == 429:
+                            # Rate limited - wait and retry
+                            await asyncio.sleep(5)
+                            async with session.get(
+                                url,
+                                params=params,
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15),
+                            ) as retry:
+                                if retry.status != 200:
+                                    failed += 1
+                                    return
+                                data = await retry.json()
+                        elif response.status != 200:
+                            failed += 1
+                            return
+                        else:
+                            data = await response.json()
+
+                        result["movies"][movie.movie_id] = data
+                        await asyncio.sleep(0.25)  # Rate limiting
+
+            except Exception as e:
+                logger.debug(f"Failed to fetch TMDB {movie.movie_id}: {e}")
+                failed += 1
+
+    await asyncio.gather(*[fetch_movie(m) for m in movies_list])
+
+    result["_meta"]["movie_count"] = len(result["movies"])
+    logger.info(f"Fetched {len(result['movies'])} movies from TMDB ({failed} failed)")
+    return result
+
+
+async def fetch_single_movie_data(movie_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch movie data with credits for a single movie.
+
+    Used by page-based cache: each page caches its own movie's data.
+
+    Args:
+        movie_id: TMDB movie ID (e.g., "872585")
+
+    Returns:
+        Dict with movie data including credits, or empty dict on error
+    """
+    api_key = TMDBClient.get_api_key()
+    if not api_key:
+        logger.warning("TMDB_API_KEY not set")
+        return {}
+
+    logger.debug(f"Fetching TMDB data for movie {movie_id}...")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.themoviedb.org/3/movie/{movie_id}"
+            headers = TMDBClient.get_headers()
+            params = {"append_to_response": "credits"}
+
+            # Rate limit
+            await TMDBClient._rate_limit()
+
+            async with session.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status == 429:
+                    # Rate limited - wait and retry
+                    await asyncio.sleep(5)
+                    async with session.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as retry:
+                        if retry.status != 200:
+                            return {}
+                        return await retry.json()
+                elif response.status != 200:
+                    logger.warning(f"TMDB error for {movie_id}: {response.status}")
+                    return {}
+                return await response.json()
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch TMDB {movie_id}: {e}")
+        return {}

@@ -53,6 +53,10 @@ class HybridPlugin(BasePlugin):
         return ["coingecko.com", "stooq.com"]
 
     @property
+    def cache_sources(self) -> List[str]:
+        return ["coingecko", "stooq"]
+
+    @property
     def description(self) -> str:
         return "Cross-site queries requiring data from multiple sources (CoinGecko + Stooq)"
 

@@ -15,6 +15,15 @@ Examples:
     # Show task registry info
     python eval.py --show-registry
 
+    # Update cache before evaluation
+    python eval.py --model "..." --update-cache
+
+    # Update cache only (no evaluation)
+    python eval.py --update-cache-only
+
+    # Show cache status
+    python eval.py --cache-status
+
 Environment:
     Copy .env.example to .env and configure your API keys.
     The script automatically loads .env on startup.
@@ -35,6 +44,7 @@ load_dotenv()
 from env import Actor
 from liveweb_arena.utils.logger import set_verbose
 from liveweb_arena.core.task_registry import TaskRegistry, parse_task_id, max_task_id
+from liveweb_arena.core.snapshot_integration import get_available_sources
 
 
 async def main():
@@ -44,8 +54,8 @@ async def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="zai-org/GLM-4.7-TEE",
-        help="LLM model name (default: zai-org/GLM-4.7-TEE)",
+        default="zai-org/GLM-4.7",
+        help="LLM model name (default: zai-org/GLM-4.7)",
     )
     parser.add_argument(
         "--base-url",
@@ -124,12 +134,148 @@ async def main():
         action="store_true",
         help="Show task registry info and exit",
     )
+    parser.add_argument(
+        "--update-cache",
+        action="store_true",
+        help="Force update cache before evaluation",
+    )
+    parser.add_argument(
+        "--update-cache-only",
+        action="store_true",
+        help="Update cache and exit (no evaluation). Only updates expired/missing sources.",
+    )
+    parser.add_argument(
+        "--cache-status",
+        action="store_true",
+        help="Show cache status and exit",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force update all sources (use with --update-cache-only)",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Use live mode (no caching, real-time web requests)",
+    )
 
     args = parser.parse_args()
+
+    def get_cache_sources_for_plugins(plugin_names: list) -> list:
+        """Derive cache sources from plugin names by querying plugin classes."""
+        if not plugin_names:
+            # No templates specified (random mode) - use all sources
+            return get_available_sources()
+
+        from liveweb_arena.plugins import get_plugin_class
+
+        sources = set()
+        for name in plugin_names:
+            plugin_cls = get_plugin_class(name)
+            if plugin_cls:
+                plugin = plugin_cls()
+                sources.update(plugin.cache_sources)
+
+        # Return derived sources (may be empty for live-only plugins like taostats)
+        return list(sources)
 
     # Handle --show-registry
     if args.show_registry:
         TaskRegistry.print_info()
+        sys.exit(0)
+
+    # Set up environment for cache updater (for eval.py, use startup strategy)
+    os.environ.setdefault("LIVEWEB_CACHE_STRATEGY", "startup")
+
+    from liveweb_arena.core.cache_updater import CacheUpdater, CacheStrategy
+
+    # Handle cache-related commands (use all sources)
+    if args.cache_status:
+        updater = CacheUpdater(sources=get_available_sources(), strategy=CacheStrategy.MANUAL)
+        status = updater.get_status()
+
+        print("=" * 50)
+        print("CACHE STATUS")
+        print("=" * 50)
+
+        if not status.get("exists"):
+            print("Status: No cache exists")
+            print(f"\nRun 'python eval.py --update-cache-only' to create cache")
+        else:
+            print(f"Snapshot: {status['snapshot_id']}")
+            print(f"Created: {datetime.fromtimestamp(status['created_at']).strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Expires: {datetime.fromtimestamp(status['expires_at']).strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Expired: {status['is_expired']}")
+            remaining_h = status.get('time_remaining_hours', 0)
+            print(f"Time remaining: {remaining_h:.1f} hours")
+            print()
+            print("Sources:")
+            for source, info in status.get('sources', {}).items():
+                api_items = info.get('api_items', 0)
+                pages = info.get('pages', 0)
+                print(f"  {source}: {api_items} API items, {pages} pages")
+
+        sys.exit(0)
+
+    if args.update_cache_only:
+        # Enable verbose mode for cache update
+        set_verbose(True)
+        import logging
+        logging.basicConfig(level=logging.INFO, format='%(message)s', force=True)
+
+        sources = get_available_sources()
+        updater = CacheUpdater(sources=sources, strategy=CacheStrategy.MANUAL)
+
+        # Check current status first
+        status = updater.get_status()
+        print(f"Checking {len(sources)} sources: {sources}")
+        print()
+
+        sources_to_update = []
+        for source in sources:
+            source_info = status.get("sources", {}).get(source, {})
+            if not source_info.get("exists"):
+                print(f"  {source}: missing -> will create")
+                sources_to_update.append(source)
+            elif source_info.get("is_expired"):
+                print(f"  {source}: expired -> will update")
+                sources_to_update.append(source)
+            else:
+                remaining = source_info.get("time_remaining_hours", 0)
+                print(f"  {source}: valid ({remaining:.1f}h remaining)")
+                if args.force:
+                    sources_to_update.append(source)
+
+        print()
+        if args.force and sources_to_update:
+            print(f"Force updating {len(sources_to_update)} sources...")
+        elif sources_to_update:
+            print(f"Updating {len(sources_to_update)} sources: {sources_to_update}")
+        else:
+            print("All sources are valid, nothing to update.")
+
+        if sources_to_update or args.force:
+            snapshot = updater.ensure_ready(force_update=args.force)
+        else:
+            snapshot = updater.get_snapshot()
+
+        print()
+        print("=" * 50)
+        print("CACHE STATUS")
+        print("=" * 50)
+        if snapshot:
+            stats = snapshot.get_stats()
+            print(f"Expires: {datetime.fromtimestamp(stats['expires_at']).strftime('%Y-%m-%d %H:%M:%S')}")
+            print()
+            print("Sources:")
+            for source, info in stats.get('sources', {}).items():
+                api_items = info.get('api_items', 0)
+                pages = info.get('pages', 0)
+                print(f"  {source}: {api_items} API items, {pages} pages")
+        else:
+            print("No cache available")
+
         sys.exit(0)
 
     # Validate task_id range
@@ -192,8 +338,45 @@ async def main():
             config_parts.append(f"templates={templates}")
         print(f"Config: {', '.join(config_parts)}")
 
-    # Initialize actor
-    actor = Actor(api_key=api_key)
+    # Derive cache sources from templates
+    if templates:
+        plugin_names = [t[0] for t in templates]
+    else:
+        plugin_names = []  # Will use default sources
+    cache_sources = get_cache_sources_for_plugins(plugin_names)
+
+    # Determine cache mode from --live flag or environment variable
+    # Priority: --live flag > LIVEWEB_CACHE_MODE env > default (cache enabled)
+    use_cache = not args.live
+    if not args.live and os.getenv("LIVEWEB_CACHE_MODE", "").lower() == "live":
+        use_cache = False
+
+    # Initialize actor and cache
+    updater = CacheUpdater(sources=cache_sources, strategy=CacheStrategy.STARTUP)
+    actor = Actor(api_key=api_key, cache_updater=updater, use_cache=use_cache)
+
+    if not use_cache:
+        print("Mode: LIVE (real-time web requests, no caching)")
+        print("-" * 50)
+
+    elif args.update_cache:
+        # Force update cache before evaluation
+        print("Updating cache before evaluation...")
+        print(f"Sources: {cache_sources}")
+
+        snapshot = actor.ensure_cache_ready(force_update=True)
+        stats = snapshot.get_stats()
+        print(f"Cache updated: {stats['snapshot_id']}")
+        print()
+    else:
+        # Try to load existing cache, create if needed
+        try:
+            snapshot = actor.ensure_cache_ready()
+            if snapshot:
+                remaining = snapshot.meta.time_remaining() / 3600
+                print(f"Using cache: {snapshot.id} (expires in {remaining:.1f}h)")
+        except Exception as e:
+            print(f"Warning: Cache setup failed ({e}), using live mode")
 
     try:
         print("Starting evaluation...")

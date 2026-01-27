@@ -468,3 +468,25 @@ class CoinGeckoPriceTemplate(QuestionTemplate):
             url_contains=coin_id if coin_id else None,
         )
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
+
+    # === Cache Registration Methods ===
+    # These methods make the template self-contained for caching.
+    # Adding a new template only requires implementing these methods.
+
+    @classmethod
+    def get_cache_source(cls) -> str:
+        """Return the cache source name for this template."""
+        return "coingecko"
+
+    @classmethod
+    def get_cache_urls(cls) -> List[str]:
+        """
+        Generate URLs to cache based on CoinVariable.COINS.
+
+        Each coin has a page at https://www.coingecko.com/en/coins/{coin_id}
+        """
+        return [
+            f"https://www.coingecko.com/en/coins/{coin.coin_id}"
+            for coin in CoinVariable.COINS
+        ]
+

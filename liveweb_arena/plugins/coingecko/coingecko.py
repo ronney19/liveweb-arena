@@ -52,7 +52,19 @@ class CoinGeckoPlugin(BasePlugin):
     @property
     def blocked_url_patterns(self) -> List[str]:
         # Block API access to force agents to use the actual website
-        return ["*api.coingecko.com*"]
+        # Also block user-related/session-related endpoints that don't need caching
+        return [
+            "*api.coingecko.com*",
+            "*geckoterminal*",
+            "*/tagmetrics/*",
+            "*/accounts/*",
+            "*/onboarding/*",
+            "*/sentiment_votes/*",
+            "*/portfolios/*",
+            "*/portfolio_summary*",
+            "*/price_charts/*",
+            "*-emoji-*",  # Block emoji/icon requests
+        ]
 
     @property
     def description(self) -> str:

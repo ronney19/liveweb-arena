@@ -48,6 +48,11 @@ class TaostatsPlugin(BasePlugin):
         return ["taostats.io"]
 
     @property
+    def cache_sources(self) -> List[str]:
+        # Taostats uses live API, no caching needed
+        return []
+
+    @property
     def description(self) -> str:
         return "Query Bittensor network data including subnets, validators, and network statistics"
 

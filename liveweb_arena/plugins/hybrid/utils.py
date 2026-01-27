@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional, TypeVar
 
 from liveweb_arena.plugins.coingecko.api_client import CoinGeckoClient
-from liveweb_arena.plugins.stooq.api_client import StooqClient
+from liveweb_arena.plugins.stooq.api_client import StooqClient, StooqRateLimitError
+from liveweb_arena.utils.logger import progress, progress_done, is_verbose
 
 logger = logging.getLogger(__name__)
 
@@ -48,34 +50,44 @@ async def retry_with_backoff(
 
     Raises:
         RuntimeError: If all retries fail
+        StooqRateLimitError: If Stooq rate limit is hit (no retry)
     """
     last_exception = None
+    start_time = time.time()
 
     for attempt in range(max_retries):
         try:
+            if is_verbose():
+                elapsed = time.time() - start_time
+                progress("GT", elapsed, 120, f"[{attempt+1}/{max_retries}] {operation_name}")
             result = await func()
             if result is not None:
+                if is_verbose():
+                    progress_done("GT", f"{operation_name} done in {time.time()-start_time:.1f}s")
                 return result
-            # If result is None, treat as retriable failure
             raise ValueError(f"{operation_name} returned None")
+        except StooqRateLimitError:
+            logger.error(f"{operation_name}: Stooq rate limit exceeded - stopping retries")
+            raise
         except Exception as e:
             last_exception = e
             if attempt < max_retries - 1:
-                # Exponential backoff: 1s, 2s, 4s, 8s, ... capped at max_delay
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 logger.warning(
                     f"{operation_name} failed (attempt {attempt + 1}/{max_retries}): {e}. "
                     f"Retrying in {delay:.1f}s..."
                 )
-                await asyncio.sleep(delay)
+                # Show progress during wait
+                wait_start = time.time()
+                while time.time() - wait_start < delay:
+                    if is_verbose():
+                        elapsed = time.time() - start_time
+                        progress("GT", elapsed, 120, f"[{attempt+1}/{max_retries}] retry wait {operation_name}")
+                    await asyncio.sleep(min(1.0, delay - (time.time() - wait_start)))
             else:
-                logger.error(
-                    f"{operation_name} failed after {max_retries} attempts: {e}"
-                )
+                logger.error(f"{operation_name} failed after {max_retries} attempts: {e}")
 
-    raise RuntimeError(
-        f"{operation_name} failed after {max_retries} retries: {last_exception}"
-    )
+    raise RuntimeError(f"{operation_name} failed after {max_retries} retries: {last_exception}")
 
 
 async def get_crypto_24h_change(coin_id: str) -> float:

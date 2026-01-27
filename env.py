@@ -12,10 +12,9 @@ from liveweb_arena.core.agent_policy import AgentPolicy
 from liveweb_arena.core.agent_loop import AgentLoop, BrowserFatalError
 from liveweb_arena.core.parser import AnswerParser
 from liveweb_arena.core.ground_truth_trigger import GroundTruthManager, FetchStrategy
-from liveweb_arena.core.cache_manager import (
-    get_cache_manager, EvaluationCacheContext,
-)
-from liveweb_arena.core.cache_adapters import get_adapter_registry
+from liveweb_arena.core.snapshot_cache import Snapshot, SnapshotCacheContext
+from liveweb_arena.core.request_interceptor import RequestInterceptor
+from liveweb_arena.core.cache_updater import CacheUpdater, get_cache_updater, CacheStrategy
 from liveweb_arena.plugins.base import BasePlugin
 from liveweb_arena.plugins.weather import WeatherPlugin
 from liveweb_arena.plugins.taostats import TaostatsPlugin
@@ -55,27 +54,37 @@ class Actor:
         "hybrid": HybridPlugin,
     }
 
-    def __init__(self, api_key: str = None, use_cache: bool = True):
+    def __init__(
+        self,
+        api_key: str = None,
+        cache_updater: Optional[CacheUpdater] = None,
+        use_cache: bool = True,
+    ):
         """
         Initialize Actor.
 
         Args:
             api_key: API key for LLM service. Falls back to CHUTES_API_KEY env var.
-            use_cache: Whether to use caching (default: True)
+            cache_updater: CacheUpdater instance (uses global if None)
+            use_cache: Whether to use cache (True) or live mode (False)
 
         Operating Modes:
-            use_cache=True (Cache Mode):
-                - API data: served from cache (refreshed every TTL seconds)
-                - Web pages: served from HAR cache (recorded per seed + API version)
-                - Benefit: Consistent data between agent view and ground truth
-                - Benefit: Reduced website access (prevents IP blocking)
-                - Benefit: Reproducible evaluations
+            use_cache=True (Snapshot Mode):
+                - API data: served from snapshot
+                - Web pages: intercepted and served from snapshot
+                - Benefit: Atomic consistency - all data from same time window
+                - Benefit: No network requests during evaluation
 
             use_cache=False (Live Mode):
                 - API data: fetched in real-time from live APIs
                 - Web pages: fetched in real-time from live websites
                 - Use case: Testing against current live data
                 - Risk: Data may differ between agent view and ground truth fetch
+
+        Cache Strategy (via LIVEWEB_CACHE_STRATEGY env var):
+            - "startup": Check cache at startup only (for eval.py)
+            - "periodic": Background updates (for long-running server)
+            - "manual": No automatic updates
         """
         self.api_key = api_key or os.getenv("CHUTES_API_KEY")
         self.browser: Optional[BrowserEngine] = None
@@ -83,7 +92,39 @@ class Actor:
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._lock = asyncio.Lock()
         self.use_cache = use_cache
-        self._cache_initialized = False
+        self._cache_updater = cache_updater
+
+    @property
+    def cache_updater(self) -> CacheUpdater:
+        """Get cache updater (lazy initialization)."""
+        if self._cache_updater is None:
+            self._cache_updater = get_cache_updater()
+        return self._cache_updater
+
+    @property
+    def snapshot(self) -> Optional[Snapshot]:
+        """Get current snapshot from cache updater."""
+        if not self.use_cache:
+            return None
+        return self.cache_updater.get_snapshot()
+
+    def ensure_cache_ready(self, force_update: bool = False) -> Optional[Snapshot]:
+        """
+        Ensure cache is ready for evaluation.
+
+        Args:
+            force_update: Force cache update even if valid
+
+        Returns:
+            Snapshot if cache mode, None if live mode
+        """
+        if not self.use_cache:
+            return None
+        return self.cache_updater.ensure_ready(force_update)
+
+    def start_background_updater(self):
+        """Start background cache updater (for long-running server)."""
+        self.cache_updater.start_background_updater()
 
     async def evaluate(
         self,
@@ -185,12 +226,6 @@ class Actor:
         """Internal evaluation logic"""
         await self._ensure_browser()
 
-        # Initialize cache adapters (lazy, only once)
-        if self.use_cache and not self._cache_initialized:
-            get_adapter_registry()  # This initializes all adapters
-            self._cache_initialized = True
-            log("Actor", "Cache adapters initialized")
-
         task = await self.task_manager.generate_composite_task(
             seed=seed,
             num_subtasks=num_subtasks,
@@ -235,76 +270,70 @@ class Actor:
             # Note: taostats uses live API, no caching needed
         cache_sources = list(set(cache_sources))  # Dedupe
 
-        # Initialize cache mode variables
-        cache_context = None
-        har_path = None
-        har_mode = "off"
+        # Initialize cache variables
+        snapshot_interceptor = None
 
         # Set up caching based on mode
-        if self.use_cache:
-            # ===== CACHE MODE =====
-            # Both API and web page (HAR) caching enabled
-            # Ensures consistency: agent sees same data as ground truth
-            log("Actor", "Mode: CACHE (API + HAR)")
+        if self.snapshot is not None:
+            # ===== SNAPSHOT MODE =====
+            # Use atomic snapshot for both API and web pages
+            log("Actor", f"Mode: SNAPSHOT ({self.snapshot.id})")
 
-            if cache_sources:
-                try:
-                    cache_manager = get_cache_manager()
-                    cache_context = EvaluationCacheContext(
-                        cache_manager=cache_manager,
-                        sources=cache_sources,
-                        ensure_fresh=True,
-                    )
-                    await cache_context.__aenter__()
+            # Create snapshot cache context for API clients
+            snapshot_context = SnapshotCacheContext(self.snapshot)
 
-                    # Set cache context for all API modules
-                    set_cache_context(cache_context)
-                    set_coingecko_cache_context(cache_context)
-                    set_stooq_cache_context(cache_context)
-                    set_weather_cache_context(cache_context)
-                    set_tmdb_cache_context(cache_context)
+            # Set cache context for all API modules
+            set_cache_context(snapshot_context)
+            set_coingecko_cache_context(snapshot_context)
+            set_stooq_cache_context(snapshot_context)
+            set_weather_cache_context(snapshot_context)
+            set_tmdb_cache_context(snapshot_context)
 
-                    cached = [s for s, v in cache_context.locked_versions.items() if v]
-                    log("Actor", f"API cache: {cached}")
+            # Collect blocked URL patterns from all plugins (must be done before creating interceptor)
+            blocked_patterns = []
+            for subtask in task.subtasks:
+                plugin = self.task_manager.get_plugin(subtask.plugin_name)
+                if plugin and hasattr(plugin, 'blocked_url_patterns'):
+                    blocked_patterns.extend(plugin.blocked_url_patterns)
+            blocked_patterns = list(set(blocked_patterns))  # Dedupe
+            if blocked_patterns:
+                log("Actor", f"Blocked URL patterns: {blocked_patterns}")
 
-                    # Get HAR cache info (paired with API cache version, seed-independent)
-                    har_path, har_mode = cache_context.get_har_cache_info()
-                    log("Actor", f"HAR cache: {har_mode} -> {har_path.name if har_path else 'N/A'}")
+            # Create request interceptor for web page caching
+            # Pass allowed_domains and plugin block patterns to interceptor
+            snapshot_interceptor = RequestInterceptor(
+                snapshot=self.snapshot,
+                mode="strict",
+                allowed_domains=allowed_domains if allowed_domains else None,
+                plugin_block_patterns=blocked_patterns if blocked_patterns else None,
+            )
 
-                    # Acquire lock for recording (prevent concurrent writes)
-                    if har_mode == "record":
-                        if not cache_context.acquire_har_lock(har_path):
-                            log("Actor", "HAR lock busy - waiting for other recording")
-                            har_path = None
-                            har_mode = "off"
-
-                except Exception as e:
-                    log("Actor", f"Cache setup failed: {e}, falling back to live mode")
-                    cache_context = None
-                    har_path = None
-                    har_mode = "off"
         else:
             # ===== LIVE MODE =====
             # No caching - all data fetched in real-time
-            log("Actor", "Mode: LIVE (real-time API + web)")
+            log("Actor", "Mode: LIVE (no snapshot provided)")
 
-        # Create browser session with HAR caching
-        session = await self.browser.new_session(har_path=har_path, har_mode=har_mode)
+        # Create browser session (no HAR - snapshot interceptor handles caching)
+        session = await self.browser.new_session()
 
-        # Set allowed domains
-        if allowed_domains:
+        # Set up snapshot interceptor if in snapshot mode
+        if snapshot_interceptor:
+            await session.set_snapshot_interceptor(snapshot_interceptor)
+        else:
+            # In live mode, apply blocked URL patterns directly to session
+            blocked_patterns = []
+            for subtask in task.subtasks:
+                plugin = self.task_manager.get_plugin(subtask.plugin_name)
+                if plugin and hasattr(plugin, 'blocked_url_patterns'):
+                    blocked_patterns.extend(plugin.blocked_url_patterns)
+            if blocked_patterns:
+                await session.block_urls(list(set(blocked_patterns)))  # Dedupe
+                log("Actor", f"Blocked URL patterns: {blocked_patterns}")
+
+        # Set allowed domains on session (for additional filtering in non-snapshot mode)
+        if allowed_domains and not snapshot_interceptor:
             await session.set_allowed_domains(list(allowed_domains))
             log("Actor", f"Allowed domains: {sorted(allowed_domains)}")
-
-        # Collect and apply blocked URL patterns from all plugins in this task
-        blocked_patterns = []
-        for subtask in task.subtasks:
-            plugin = self.task_manager.get_plugin(subtask.plugin_name)
-            if plugin and hasattr(plugin, 'blocked_url_patterns'):
-                blocked_patterns.extend(plugin.blocked_url_patterns)
-        if blocked_patterns:
-            await session.block_urls(list(set(blocked_patterns)))  # Dedupe
-            log("Actor", f"Blocked URL patterns: {blocked_patterns}")
 
         try:
             llm_client = LLMClient(base_url=base_url, api_key=api_key)
@@ -371,7 +400,7 @@ class Actor:
                 usage = agent_loop.get_usage()
 
             # Fetch remaining ground truths (including legacy subtasks without triggers)
-            await gt_manager.fetch_remaining(subtasks=task.subtasks)
+            await gt_manager.fetch_remaining()
             ground_truths = gt_manager.get_ground_truths()
 
             # Log fetch summary
@@ -421,6 +450,15 @@ class Actor:
                 total_score = 0.0
                 success = False
 
+            # Check for fatal cache misses (pages not in cache)
+            interceptor_stats = session.get_interceptor_stats()
+            fatal_misses = interceptor_stats.get('fatal_misses', []) if interceptor_stats else []
+            if fatal_misses:
+                # Cache miss is a fatal error - evaluation cannot be trusted
+                total_score = 0.0
+                success = False
+                fatal_error_message = f"Page not cached: {fatal_misses[0]}"
+
             # Get final URL
             final_url = None
             if trajectory:
@@ -455,41 +493,35 @@ class Actor:
             return result
 
         finally:
-            # Log HAR info before closing session
-            har_info = session.get_har_info()
-            if har_info:
-                log("Actor", f"HAR cache: mode={har_info['mode']}, saved={har_info['path']}")
+            # Log interceptor stats if using snapshot mode
+            interceptor_stats = session.get_interceptor_stats()
+            if interceptor_stats:
+                hits = interceptor_stats.get('hits', 0)
+                misses = interceptor_stats.get('misses', 0)
+                blocked = interceptor_stats.get('blocked', 0)
+                passthrough = interceptor_stats.get('passthrough', 0)
+                hit_rate = interceptor_stats.get('hit_rate', 0) * 100
+                fatal_misses = interceptor_stats.get('fatal_misses', [])
 
-            # Always close the session (this saves HAR file if recording)
+                log("Actor", f"Snapshot cache: {hits} hits, {misses} misses "
+                    f"({hit_rate:.1f}% hit rate) | {blocked} blocked, {passthrough} passthrough")
+
+                # Report fatal misses (pages not in cache)
+                if fatal_misses:
+                    log("Actor", f"FATAL: {len(fatal_misses)} page(s) not cached:")
+                    for url in fatal_misses[:5]:
+                        log("Actor", f"  - {url}")
+                    log("Actor", "Run 'python eval.py --update-cache-only' to populate cache")
+
+            # Close browser session
             await session.close()
 
-            # Post-recording validation and lock release
-            if har_mode == "record" and har_path and cache_context:
-                # Release the recording lock
-                cache_context.release_har_lock(har_path)
-
-                # Validate the recorded HAR file
-                if har_path.exists():
-                    if cache_context._validate_har_file(har_path):
-                        size_kb = har_path.stat().st_size / 1024
-                        log("Actor", f"HAR recording validated: {size_kb:.1f} KB")
-                    else:
-                        log("Actor", "HAR recording invalid or incomplete - will re-record on next run")
-                        try:
-                            har_path.unlink()
-                        except OSError:
-                            pass
-                else:
-                    log("Actor", "HAR recording failed - file not created")
-
-            # Clean up cache context
-            if cache_context is not None:
-                await cache_context.__aexit__(None, None, None)
-                set_cache_context(None)
-                set_coingecko_cache_context(None)
-                set_stooq_cache_context(None)
-                set_weather_cache_context(None)
-                set_tmdb_cache_context(None)
+            # Clear global cache contexts
+            set_cache_context(None)
+            set_coingecko_cache_context(None)
+            set_stooq_cache_context(None)
+            set_weather_cache_context(None)
+            set_tmdb_cache_context(None)
 
     async def _fetch_ground_truths_with_retry(
         self,
@@ -545,10 +577,14 @@ class Actor:
                 await self.browser.start()
 
     async def shutdown(self):
-        """Shutdown browser and cleanup resources"""
+        """Shutdown browser, cache updater and cleanup resources"""
         if self.browser:
             await self.browser.stop()
             self.browser = None
+
+        # Stop background cache updater if running
+        if self._cache_updater:
+            self._cache_updater.stop()
 
     def _build_conversation(
         self,

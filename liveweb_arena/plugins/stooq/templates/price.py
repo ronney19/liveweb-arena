@@ -14,6 +14,7 @@ from .variables import (
     StockVariable, IndexVariable, CurrencyVariable, CommodityVariable,
     PriceMetricVariable, StockSpec, IndexSpec, CurrencySpec, CommoditySpec,
     MetricSpec, PriceMetric, InstrumentType,
+    US_STOCKS, INDICES, CURRENCIES, COMMODITIES,
 )
 
 
@@ -341,3 +342,30 @@ class StooqPriceTemplate(QuestionTemplate):
             url_contains=symbol if symbol else None,
         )
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
+
+    # === Cache Registration Methods ===
+    # These methods make the template self-contained for caching.
+
+    @classmethod
+    def get_cache_source(cls) -> str:
+        """Return the cache source name for this template."""
+        return "stooq"
+
+    @classmethod
+    def get_cache_urls(cls) -> List[str]:
+        """
+        Generate URLs to cache based on Stooq variables.
+
+        Each instrument has a page at https://stooq.com/q/?s={symbol}
+        """
+        urls = []
+        for stock in US_STOCKS:
+            urls.append(f"https://stooq.com/q/?s={stock.symbol}")
+        for index in INDICES:
+            urls.append(f"https://stooq.com/q/?s={index.symbol}")
+        for currency in CURRENCIES:
+            urls.append(f"https://stooq.com/q/?s={currency.symbol}")
+        for commodity in COMMODITIES:
+            urls.append(f"https://stooq.com/q/?s={commodity.symbol}")
+        return urls
+

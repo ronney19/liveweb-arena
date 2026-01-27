@@ -20,6 +20,8 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Pattern, Union
 from urllib.parse import urlparse
 
+from liveweb_arena.utils.logger import log
+
 logger = logging.getLogger(__name__)
 
 
@@ -452,6 +454,7 @@ class GroundTruthManager:
                 continue
 
             fetch = GroundTruthFetch(url=url, value=None, timestamp=time.time())
+            log("GT", f"Fetching ground truth for {tag}...")
 
             for attempt in range(max_retries):
                 try:
@@ -492,14 +495,11 @@ class GroundTruthManager:
 
         return triggered
 
-    async def fetch_remaining(self, subtasks: list = None, max_retries: int = 3):
+    async def fetch_remaining(self, max_retries: int = 3):
         """
         Fetch ground truth for any subtasks that were never triggered.
 
-        Also handles subtasks without triggers (legacy) if subtasks list is provided.
-
         Args:
-            subtasks: Optional list of SubTask objects for legacy handling
             max_retries: Maximum retry attempts for retryable failures
         """
         import asyncio
@@ -511,6 +511,7 @@ class GroundTruthManager:
                 continue
 
             fetch = GroundTruthFetch(url="fallback", value=None, timestamp=time.time())
+            log("GT", f"Fallback fetch for {tag}...")
 
             for attempt in range(max_retries):
                 try:
@@ -544,52 +545,6 @@ class GroundTruthManager:
                     break
 
             state.fetches.append(fetch)
-
-        # Handle subtasks without triggers (legacy)
-        if subtasks and self._task_manager:
-            for subtask in subtasks:
-                if subtask.answer_tag in self.states:
-                    continue
-
-                plugin = self._task_manager.get_plugin(subtask.plugin_name)
-                state = GroundTruthState(
-                    subtask_tag=subtask.answer_tag,
-                    trigger=None,
-                    strategy=FetchStrategy.FIRST,
-                )
-                fetch = GroundTruthFetch(url="legacy", value=None, timestamp=time.time())
-
-                for attempt in range(max_retries):
-                    try:
-                        result = await plugin.get_ground_truth(subtask.validation_info)
-
-                        if isinstance(result, GroundTruthResult):
-                            if result.success:
-                                fetch.value = result.value
-                                fetch.error = None
-                                break
-                            elif result.retryable and attempt < max_retries - 1:
-                                await asyncio.sleep(1.0 * (attempt + 1))
-                                continue
-                            else:
-                                fetch.error = result.error
-                                break
-                        else:
-                            fetch.value = result
-                            fetch.error = None
-                            break
-
-                    except Exception as e:
-                        error_name = type(e).__name__
-                        if any(err in error_name for err in ['Timeout', 'Connect', 'Network']):
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(1.0 * (attempt + 1))
-                                continue
-                        fetch.error = str(e)
-                        break
-
-                state.fetches.append(fetch)
-                self.states[subtask.answer_tag] = state
 
     def get_ground_truths(self) -> Dict[str, Any]:
         """Get all ground truths as a dict."""

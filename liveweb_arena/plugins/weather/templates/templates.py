@@ -381,6 +381,40 @@ class LocationNameWeatherTemplate(QuestionTemplate):
         )
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
 
+    # === Cache Registration Methods ===
+    # These methods make the template self-contained for caching.
+
+    @classmethod
+    def get_cache_source(cls) -> str:
+        """Return the cache source name for this template."""
+        return "weather"
+
+    @classmethod
+    def get_cache_urls(cls) -> List[str]:
+        """
+        Generate URLs to cache based on LocationVariable.
+
+        Each location has multiple formats:
+        - https://wttr.in/{query} - HTML page
+        - https://wttr.in/{query}?format=j1 - JSON API (used by agent)
+        - https://v2.wttr.in/{query} - Enhanced HTML page
+        """
+        urls = []
+        # Add all city locations (HTML, JSON API, and v2 formats)
+        for region, cities in LocationVariable.CITY_SEEDS.items():
+            for city, country in cities:
+                query = f"{city},{country}".replace(" ", "+")
+                urls.append(f"https://wttr.in/{query}")
+                urls.append(f"https://wttr.in/{query}?format=j1")
+                urls.append(f"https://v2.wttr.in/{query}")
+        # Add airport codes
+        for code in LocationVariable.AIRPORT_CODES:
+            urls.append(f"https://wttr.in/{code.lower()}")
+            urls.append(f"https://wttr.in/{code.lower()}?format=j1")
+            urls.append(f"https://v2.wttr.in/{code.lower()}")
+        return urls
+
+
 
 @register_template("current_weather")
 class CurrentWeatherTemplate(QuestionTemplate):

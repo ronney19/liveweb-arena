@@ -3,11 +3,16 @@
 import os
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from liveweb_arena.utils.logger import log
+
 logger = logging.getLogger(__name__)
+
+# Cache source name
+CACHE_SOURCE = "coingecko"
 
 # Global cache context reference (set by env.py during evaluation)
 _cache_context: Optional[Any] = None
@@ -167,11 +172,16 @@ class CoinGeckoClient:
                         break
 
                 if all_found and cached_results:
-                    logger.debug(f"Cache hit: CoinGecko market data for {coin_ids}")
+                    log("GT", f"CACHE HIT - CoinGecko: {coin_ids}", force=True)
                     return cached_results
-                logger.debug(f"Cache miss for CoinGecko {coin_ids}, falling back to API")
 
-        # Fall back to live API
+                # Cache mode but data not found - this is an error
+                log("GT", f"CACHE MISS - CoinGecko: {coin_ids} not in cache ({len(coins)} coins cached)", force=True)
+                return None
+            else:
+                log("GT", f"CoinGecko api_data empty - rebuild cache with --force", force=True)
+
+        # No cache context - use live API (non-cache mode)
         params = {
             "vs_currency": vs_currency,
             "ids": coin_ids,
@@ -225,3 +235,128 @@ class CoinGeckoClient:
             "vs_currencies": vs_currencies,
         }
         return await cls.get("/simple/price", params)
+
+
+# ============================================================
+# Cache Data Fetcher (used by snapshot_integration)
+# ============================================================
+
+async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
+    """
+    Fetch CoinGecko market data for all coins defined in variables.
+
+    Returns data structure:
+    {
+        "_meta": {"source": "coingecko", "coin_count": N},
+        "coins": {
+            "bitcoin": {<market_data>},
+            "ethereum": {<market_data>},
+            ...
+        }
+    }
+    """
+    from .templates.variables import CoinVariable
+
+    coins = [coin.coin_id for coin in CoinVariable.COINS]
+    logger.info(f"Fetching CoinGecko data for {len(coins)} coins...")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Use CoinGeckoClient's API key if available
+            headers = CoinGeckoClient.get_headers()
+            base_url = CoinGeckoClient.get_base_url()
+
+            params = {
+                "vs_currency": "usd",
+                "ids": ",".join(coins),
+                "order": "market_cap_desc",
+                "per_page": 100,
+                "page": 1,
+                "sparkline": "false",
+                "price_change_percentage": "24h,7d,30d",
+            }
+
+            async with session.get(
+                f"{base_url}/coins/markets",
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"API error: {response.status}")
+                data = await response.json()
+
+        # Organize by coin_id for easy lookup
+        result = {
+            "_meta": {
+                "source": CACHE_SOURCE,
+                "endpoint": "coins/markets",
+                "coin_count": len(data),
+            },
+            "coins": {},
+        }
+        for coin in data:
+            coin_id = coin.get("id")
+            if coin_id:
+                result["coins"][coin_id] = coin
+
+        logger.info(f"Fetched {len(result['coins'])} coins from CoinGecko")
+        return result
+
+    except Exception as e:
+        logger.error(f"CoinGecko fetch failed: {e}")
+        return {"_meta": {"source": CACHE_SOURCE, "coin_count": 0}, "coins": {}}
+
+
+async def fetch_single_coin_data(coin_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch market data for a single coin.
+
+    Used by page-based cache: each page caches its own coin's data.
+
+    Args:
+        coin_id: CoinGecko coin ID (e.g., "bitcoin", "ethereum")
+
+    Returns:
+        Dict with coin market data, or empty dict on error
+    """
+    logger.debug(f"Fetching CoinGecko data for {coin_id}...")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = CoinGeckoClient.get_headers()
+            base_url = CoinGeckoClient.get_base_url()
+
+            params = {
+                "vs_currency": "usd",
+                "ids": coin_id,
+                "order": "market_cap_desc",
+                "per_page": 1,
+                "page": 1,
+                "sparkline": "false",
+                "price_change_percentage": "24h,7d,30d",
+            }
+
+            # Rate limit
+            await CoinGeckoClient._rate_limit()
+
+            async with session.get(
+                f"{base_url}/coins/markets",
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status != 200:
+                    logger.warning(f"CoinGecko API error for {coin_id}: {response.status}")
+                    return {}
+                data = await response.json()
+
+        if not data:
+            return {}
+
+        # Return the single coin's data
+        return data[0] if data else {}
+
+    except Exception as e:
+        logger.error(f"CoinGecko fetch failed for {coin_id}: {e}")
+        return {}

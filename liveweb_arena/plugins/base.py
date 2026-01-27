@@ -174,3 +174,18 @@ class BasePlugin(ABC):
             List of allowed domain names (without protocol)
         """
         return self.supported_sites
+
+    @property
+    def cache_sources(self) -> List[str]:
+        """
+        Cache sources required by this plugin.
+
+        By default, returns [self.name] assuming 1:1 mapping between
+        plugin name and cache source. Override for plugins that:
+        - Use multiple sources (e.g., hybrid)
+        - Use no caching (e.g., taostats with live API)
+
+        Returns:
+            List of cache source names
+        """
+        return [self.name]

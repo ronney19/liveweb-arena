@@ -291,6 +291,97 @@ class QuestionTemplate(ABC):
         """
         return None
 
+    # === Cache Registration Methods ===
+    # Templates should override these methods to define their cache requirements.
+    # This allows adding new templates without modifying other files.
+
+    @classmethod
+    def get_cache_source(cls) -> Optional[str]:
+        """
+        Get the cache source name for this template.
+
+        Multiple templates can share the same source (e.g., all CoinGecko templates
+        return "coingecko"). The cache system will deduplicate.
+
+        By default, infers source from template name prefix:
+        - "coingecko_*" -> "coingecko"
+        - "stooq_*" -> "stooq"
+        - "tmdb_*" -> "tmdb"
+        - "taostats_*" -> "taostats"
+        - "*weather*" or "location_name" etc -> "weather"
+
+        Override this method for custom behavior.
+
+        Returns:
+            Source name (e.g., "coingecko", "stooq", "weather") or None if no caching needed.
+        """
+        # Find the registered name for this class
+        template_name = None
+        for name, template_cls in _TEMPLATE_REGISTRY.items():
+            if template_cls is cls:
+                template_name = name
+                break
+
+        if not template_name:
+            return None
+
+        # Infer source from template name prefix
+        prefixes = {
+            "coingecko_": "coingecko",
+            "stooq_": "stooq",
+            "tmdb_": "tmdb",
+            "taostats_": "taostats",
+        }
+
+        for prefix, source in prefixes.items():
+            if template_name.startswith(prefix):
+                return source
+
+        # Weather templates have various names
+        weather_templates = {
+            "location_name", "current_weather", "time_of_day",
+            "astronomy", "weather_comparison", "multi_day"
+        }
+        if template_name in weather_templates:
+            return "weather"
+
+        return None
+
+    @classmethod
+    def get_cache_urls(cls) -> List[str]:
+        """
+        Get list of URLs that need to be cached for this template.
+
+        Override this method to generate URLs based on the template's variables.
+        URLs should be generated dynamically based on rules, not hardcoded.
+
+        Returns:
+            List of URLs to cache. Empty list means no pages need caching.
+        """
+        return []
+
+    @classmethod
+    async def fetch_cache_api_data(cls) -> Optional[Dict[str, Any]]:
+        """
+        Fetch API data that needs to be cached for this template.
+
+        Override this method to fetch data from APIs based on template's needs.
+        The returned data will be stored in the snapshot for ground truth.
+
+        The data structure should be:
+        {
+            "_meta": {"source": "...", ...},
+            "<entities_key>": {
+                "<entity_id>": {<entity_data>},
+                ...
+            }
+        }
+
+        Returns:
+            Dictionary of API data to cache, or None if no API caching needed.
+        """
+        return None
+
     def _sample_variables(self, rng: random.Random) -> Dict[str, Any]:
         """Sample all registered variables"""
         return {

@@ -186,3 +186,28 @@ class TMDBCastPositionTemplate(QuestionTemplate):
             url_contains=f"/movie/{movie_id}" if movie_id else None,
         )
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
+
+    # === Cache Registration Methods ===
+
+    @classmethod
+    def get_cache_source(cls) -> str:
+        """Return the cache source name for this template."""
+        return "tmdb"
+
+    @classmethod
+    def get_cache_urls(cls) -> list:
+        """Generate URLs to cache based on MovieVariable."""
+        from .variables import MovieVariable
+        urls = [
+            # Homepage for navigation
+            "https://www.themoviedb.org/",
+        ]
+        for movie in MovieVariable.MOVIES:
+            # Movie detail page
+            urls.append(f"https://www.themoviedb.org/movie/{movie.movie_id}")
+            # Movie detail page with slug
+            urls.append(f"https://www.themoviedb.org/movie/{movie.movie_id}-{movie.slug}")
+            # Full cast & crew page
+            urls.append(f"https://www.themoviedb.org/movie/{movie.movie_id}/cast")
+        return urls
+
