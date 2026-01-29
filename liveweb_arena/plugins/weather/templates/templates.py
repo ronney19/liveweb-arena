@@ -436,7 +436,7 @@ class LocationNameWeatherTemplate(QuestionTemplate):
 
         Each location has multiple formats:
         - https://wttr.in/{query} - HTML page (ASCII art, parseable)
-        - https://wttr.in/{query}?format=j1 - JSON API (blocked, forces web browsing)
+        - https://wttr.in/{query}?format=j1 - JSON API (for detailed data like humidity)
 
         Note: v2.wttr.in is NOT supported (uses images instead of ASCII art)
         """

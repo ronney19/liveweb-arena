@@ -29,10 +29,18 @@ class WeatherPlugin(BasePlugin):
         "wttr.in",
     ]
 
+    @property
+    def usage_hint(self) -> str:
+        """Usage hint for weather data access."""
+        return (
+            "Use wttr.in to find weather information. "
+            "Add ?format=j1 to get JSON data with detailed fields like humidity, wind speed, etc. "
+            "(e.g., wttr.in/London?format=j1)"
+        )
+
     def get_blocked_patterns(self) -> List[str]:
-        """Block API/shortcut access to force agents to use the HTML website."""
+        """Block v2 version which uses images instead of ASCII art."""
         return [
-            "*?format=*",      # Block JSON API shortcuts like ?format=j1
             "*v2.wttr.in*",    # Block v2 version (uses images instead of ASCII art)
         ]
 
