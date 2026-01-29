@@ -10,7 +10,6 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
 )
-from liveweb_arena.plugins.stooq.api_client import StooqClient
 from .variables import CURRENCIES, CurrencySpec
 
 
@@ -133,20 +132,25 @@ The agent must:
 3. Provide a clear numeric answer"""
 
     async def _fetch_exchange_rate(self, symbol: str) -> GroundTruthResult:
-        """Fetch current exchange rate from Stooq (via cached StooqClient)"""
-        try:
-            data = await StooqClient.get_price_data(symbol)
+        """Fetch current exchange rate from collected API data (no network fallback)."""
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            if not data:
-                return GroundTruthResult.retry(f"No data for {symbol}")
+        collected = gt_collector.get_collected_api_data()
+        # Try both original and lowercase
+        data = collected.get(symbol) or collected.get(symbol.lower())
+        if not data:
+            return GroundTruthResult.fail(
+                f"Stooq data for '{symbol}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            rate = data.get("close")
-            if not rate or rate <= 0:
-                return GroundTruthResult.fail("Invalid exchange rate")
-            return GroundTruthResult.ok(rate)
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching rate: {e}")
+        rate = data.get("close")
+        if not rate or rate <= 0:
+            return GroundTruthResult.fail("Invalid exchange rate in collected data")
+        return GroundTruthResult.ok(rate)
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
         """

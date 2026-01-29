@@ -76,6 +76,13 @@ class TaskManager:
                 raise ValueError("No plugins available")
             selected_templates = [(rng.choice(available), None, None) for _ in range(num_subtasks)]
 
+        # Initialize plugins that will be used (some need API data before question generation)
+        plugins_to_use = set(p for p, _, _ in selected_templates)
+        for plugin_name in plugins_to_use:
+            plugin = self._get_plugin(plugin_name)
+            if hasattr(plugin, 'initialize'):
+                plugin.initialize()
+
         # Generate sub-tasks
         subtasks: List[SubTask] = []
 

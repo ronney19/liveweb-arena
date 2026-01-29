@@ -19,7 +19,6 @@ class WeatherPlugin(BasePlugin):
     Handles pages like:
     - https://wttr.in/London
     - https://wttr.in/New+York
-    - https://v2.wttr.in/Tokyo
 
     API data includes: current_condition, 3-day forecast, astronomy, etc.
     """
@@ -28,15 +27,18 @@ class WeatherPlugin(BasePlugin):
 
     allowed_domains = [
         "wttr.in",
-        "v2.wttr.in",
     ]
 
     def get_blocked_patterns(self) -> List[str]:
-        """Block JSON API access to force agents to use the HTML website."""
+        """Block API/shortcut access to force agents to use the HTML website."""
         return [
-            "*?format=j1*",
-            "*?format=json*",
+            "*?format=*",      # Block JSON API shortcuts like ?format=j1
+            "*v2.wttr.in*",    # Block v2 version (uses images instead of ASCII art)
         ]
+
+    def needs_api_data(self, url: str) -> bool:                                                                                                                   
+        """Only location pages need API data."""                                                                                                                  
+        return bool(self._extract_location(url))    
 
     async def fetch_api_data(self, url: str) -> Dict[str, Any]:
         """
@@ -55,6 +57,9 @@ class WeatherPlugin(BasePlugin):
             return {}
 
         data = await fetch_single_location_data(location)
+        if data:
+            # Add location key for GT collector
+            data["location"] = location
         return data if data else {}
 
     def _extract_location(self, url: str) -> str:
@@ -64,7 +69,6 @@ class WeatherPlugin(BasePlugin):
         Examples:
             https://wttr.in/London -> London
             https://wttr.in/New+York -> New+York
-            https://v2.wttr.in/Tokyo,Japan -> Tokyo,Japan
         """
         parsed = urlparse(url)
         path = parsed.path.strip("/")

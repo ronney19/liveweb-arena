@@ -10,21 +10,23 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
-from liveweb_arena.core.gt_collector import GTSourceType
-from .variables import _fetch_active_subnet_ids, _fetch_subnet_name
+from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
+from .variables import _fetch_top_subnet_ids, _fetch_subnet_name
 
 
 class ComparisonMetric(Enum):
     """Metrics for subnet comparison - only metrics visible on taostats.io"""
     PRICE = "price"
     TAO_STAKED = "tao_staked"
-    # Note: ALPHA_IN and ALPHA_OUT removed - not displayed on website
-    # (SDK alpha_in/alpha_out are different from "Alpha in Pool" shown on site)
 
 
 def _get_subnet_pairs(rng: random.Random, count: int = 2) -> List[Tuple[int, str]]:
-    """Dynamically fetch subnet IDs and names for comparison."""
-    subnet_ids = _fetch_active_subnet_ids()
+    """Dynamically fetch subnet IDs and names for comparison.
+
+    Uses top 10 subnets by emission to ensure visibility on first page
+    (taostats.io defaults to 10 rows sorted by emission).
+    """
+    subnet_ids = _fetch_top_subnet_ids(top_n=10)
     if len(subnet_ids) < count:
         return []
 
@@ -37,10 +39,10 @@ class ComparisonTemplate(QuestionTemplate):
     """
     Template for comparing two subnets.
 
-    Only fetches 2 subnets from SDK, so it's fast.
+    Uses taostats API data for ground truth (bound to page cache).
     """
 
-    GT_SOURCE = GTSourceType.API_ONLY  # Multi-subnet comparison via SDK
+    GT_SOURCE = GTSourceType.HYBRID  # Uses collected API data from page visits
 
     PATTERNS: Dict[ComparisonMetric, List[str]] = {
         ComparisonMetric.PRICE: [
@@ -71,11 +73,10 @@ class ComparisonTemplate(QuestionTemplate):
         """
         rng = random.Random(seed)
 
-        # Dynamically select two different subnets
+        # Dynamically select two different subnets from top subnets
         selected = _get_subnet_pairs(rng, 2)
         if len(selected) < 2:
-            # Fallback if network fetch fails
-            selected = [(1, "Subnet 1"), (2, "Subnet 2")]
+            raise RuntimeError("Could not fetch subnet data for comparison question generation")
         id1, name1 = selected[0]
         id2, name2 = selected[1]
 
@@ -126,42 +127,55 @@ class ComparisonTemplate(QuestionTemplate):
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
         """
-        Get ground truth by comparing two subnets from SDK.
+        Get ground truth by comparing two subnets from collected API data (no network fallback).
 
         Returns GroundTruthResult with the name of the subnet with higher value.
         """
-        try:
-            import bittensor as bt
+        metric = validation_info.get("metric", "")
+        id1 = validation_info.get("subnet1_id")
+        id2 = validation_info.get("subnet2_id")
+        name1 = validation_info.get("subnet1_name")
+        name2 = validation_info.get("subnet2_name")
 
-            subtensor = bt.Subtensor(network="finney")
-            metric = validation_info.get("metric", "")
-            id1 = validation_info.get("subnet1_id")
-            id2 = validation_info.get("subnet2_id")
-            name1 = validation_info.get("subnet1_name")
-            name2 = validation_info.get("subnet2_name")
+        # Get collected API data from GT collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            # Fetch both subnets
-            info1 = subtensor.subnet(id1)
-            info2 = subtensor.subnet(id2)
+        collected = gt_collector.get_collected_api_data()
+        taostats_data = collected.get("taostats", {})
+        subnets = taostats_data.get("subnets", {})
 
-            if info1 is None or info2 is None:
-                return GroundTruthResult.retry("Could not fetch subnet data")
+        if not subnets:
+            return GroundTruthResult.fail(
+                f"Taostats subnets data not collected. "
+                f"Available keys: {list(collected.keys())[:10]}"
+            )
 
-            # Get values based on metric
-            if metric == "price":
-                val1 = float(info1.price.tao) if info1.price else 0
-                val2 = float(info2.price.tao) if info2.price else 0
-            elif metric == "tao_staked":
-                val1 = float(info1.tao_in.tao) if info1.tao_in else 0
-                val2 = float(info2.tao_in.tao) if info2.tao_in else 0
-            else:
-                return GroundTruthResult.fail(f"Unknown metric: {metric}")
+        data1 = subnets.get(str(id1), {})
+        data2 = subnets.get(str(id2), {})
 
-            # Return name of subnet with higher value
-            return GroundTruthResult.ok(name1 if val1 > val2 else name2)
+        if not data1:
+            return GroundTruthResult.fail(
+                f"Subnet {id1} ({name1}) not found in collected data"
+            )
+        if not data2:
+            return GroundTruthResult.fail(
+                f"Subnet {id2} ({name2}) not found in collected data"
+            )
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"Bittensor SDK error: {e}")
+        # Get values based on metric
+        if metric == "price":
+            val1 = float(data1.get("price", 0) or 0)
+            val2 = float(data2.get("price", 0) or 0)
+        elif metric == "tao_staked":
+            val1 = float(data1.get("tao_in", 0) or 0)
+            val2 = float(data2.get("tao_in", 0) or 0)
+        else:
+            return GroundTruthResult.fail(f"Unknown metric: {metric}")
+
+        # Return name of subnet with higher value
+        return GroundTruthResult.ok(name1 if val1 > val2 else name2)
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
@@ -185,10 +199,6 @@ class ComparisonTemplate(QuestionTemplate):
 
         # Check if correct subnet is mentioned
         if ground_truth.lower() in answer_lower:
-            # Make sure wrong subnet isn't also mentioned as the answer
-            wrong_name = name2 if ground_truth == name1 else name1
-            # Simple heuristic: if both are mentioned, check which comes first
-            # or if one is negated
             return ValidationResult(
                 score=1.0,
                 is_correct=True,
@@ -214,3 +224,7 @@ class ComparisonTemplate(QuestionTemplate):
     def get_cache_source(cls) -> str:
         """Return the cache source name for this template."""
         return "taostats"
+
+    def get_gt_source(self) -> GTSourceType:
+        """Return GT source type."""
+        return self.GT_SOURCE

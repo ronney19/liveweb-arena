@@ -1,17 +1,10 @@
 """
 Unified Ground Truth Collection System
 
-This module provides a unified GT collection system that:
-1. Allows templates to declare their GT source type (PAGE_ONLY, API_ONLY, HYBRID)
-2. Collects GT data in real-time during page visits
-3. Supports API-based GT fetching for templates that require it
-4. Provides a unified interface for GT retrieval
-
-Design principles:
-- GT source type is a design-time declaration, not a runtime fallback
-- PAGE_ONLY is the default (ensures data consistency)
-- HYBRID allows page extraction with API supplementation
-- API_ONLY is for complex aggregations or SDK calls
+Design principle: API DATA ONLY, NO FALLBACK
+- Cache mode: API data is bound to page snapshots (same data source)
+- Live mode: Page visit triggers API fetch (consistent data)
+- All GT comes from API data - no regex-based page extraction
 """
 
 import logging
@@ -20,11 +13,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from liveweb_arena.core.gt_extraction import (
-    GTExtractionState,
-    extract_from_page,
-    _load_extractors,
-)
 from liveweb_arena.core.ground_truth_trigger import UrlPatternTrigger, TriggerConfig
 from liveweb_arena.utils.logger import log
 
@@ -52,10 +40,10 @@ class GTSourceType(Enum):
     """
     Ground truth source type declaration.
 
-    Templates declare their GT source type to specify where GT data should come from:
-    - PAGE_ONLY: GT is extracted from page content (accessibility tree)
-    - API_ONLY: GT is fetched from API (for complex aggregations, SDK calls)
-    - HYBRID: GT primarily from page, with API supplementation for specific fields
+    All types now use API data (no page extraction):
+    - PAGE_ONLY: Uses collected API data from visited pages
+    - API_ONLY: Uses API data (for complex aggregations)
+    - HYBRID: Uses collected API data (same as PAGE_ONLY)
     """
     PAGE_ONLY = "page_only"
     API_ONLY = "api_only"
@@ -68,7 +56,6 @@ class GTResult:
     tag: str
     source_type: GTSourceType
     value: Optional[str] = None
-    page_data: Optional[Dict[str, Any]] = None
     api_data: Optional[Any] = None
     error: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
@@ -77,65 +64,42 @@ class GTResult:
     def success(self) -> bool:
         return self.value is not None
 
-    @property
-    def formatted_value(self) -> Optional[str]:
-        """Get the formatted GT value ready for validation."""
-        return self.value
-
 
 class GTCollector:
     """
     Unified GT collector that manages GT collection for all subtasks.
 
-    This replaces the old GroundTruthManager and provides:
-    1. Real-time page extraction during navigation
-    2. API-based GT fetching for API_ONLY/HYBRID templates
-    3. Unified GT state management
-    4. Clear failure reporting
+    All GT data comes from API:
+    - Collected API data from page visits (cache mode)
+    - Direct API calls (live mode or complex templates)
     """
 
     def __init__(self, subtasks: List["SubTask"], task_manager=None):
-        """
-        Initialize GT collector.
-
-        Args:
-            subtasks: List of subtasks to collect GT for
-            task_manager: TaskManager for accessing plugins
-        """
         self.subtasks = subtasks
         self._task_manager = task_manager
-        self._page_extractors = _load_extractors()
 
-        # GT extraction state for page-based collection
-        self._extraction_state = GTExtractionState()
-
-        # API fetch results per subtask
+        # API fetch results per subtask tag
         self._api_results: Dict[str, Any] = {}
-
-        # Track which subtasks have been processed
-        self._processed: Dict[str, bool] = {}
 
         # Track visited URLs for each subtask
         self._visited_urls: Dict[str, List[str]] = {st.answer_tag: [] for st in subtasks}
 
         # Collected API data from page visits {asset_id: {field: value}}
-        # This replaces the global API cache for HYBRID templates
         self._collected_api_data: Dict[str, Dict[str, Any]] = {}
 
     def _get_source_type(self, subtask: "SubTask") -> GTSourceType:
         """Get GT source type for a subtask."""
         if self._task_manager is None:
-            return GTSourceType.PAGE_ONLY
+            return GTSourceType.API_ONLY
 
         plugin = self._task_manager.get_plugin(subtask.plugin_name)
         if plugin is None:
-            return GTSourceType.PAGE_ONLY
+            return GTSourceType.API_ONLY
 
-        # Check if plugin has get_gt_source method
         if hasattr(plugin, 'get_gt_source'):
             return plugin.get_gt_source(subtask.validation_info)
 
-        return GTSourceType.PAGE_ONLY
+        return GTSourceType.API_ONLY
 
     def _get_trigger_config(self, subtask: "SubTask") -> Optional["TriggerConfig"]:
         """Get trigger configuration for a subtask."""
@@ -148,20 +112,6 @@ class GTCollector:
 
         return plugin.get_ground_truth_trigger(subtask.validation_info)
 
-    def _get_trigger(self, subtask: "SubTask") -> Optional[UrlPatternTrigger]:
-        """Get URL trigger for a subtask."""
-        config = self._get_trigger_config(subtask)
-        if config is None:
-            return None
-        return config.trigger
-
-    def _should_trigger_api(self, url: str, subtask: "SubTask") -> bool:
-        """Check if URL should trigger API fetch for subtask."""
-        trigger = self._get_trigger(subtask)
-        if trigger is None:
-            return False
-        return trigger.matches(url)
-
     async def on_page_visit(
         self,
         url: str,
@@ -169,88 +119,121 @@ class GTCollector:
         api_data: Optional[Dict[str, Any]] = None,
     ):
         """
-        Handle page visit event - extract GT from page content and merge api_data.
-
-        This is called during agent navigation to collect GT in real-time.
+        Handle page visit - merge API data from cache.
 
         Args:
             url: The URL being visited
-            content: Accessibility tree content of the page
-            api_data: Page-bound API data from cache (for HYBRID GT)
+            content: Accessibility tree content (not used for GT)
+            api_data: Page-bound API data from cache
         """
         if not url or url == "about:blank":
             return
 
-        log("GT", f"Page visit: {url[:60]}...")
+        # Merge API data and log in one step
+        collected_info = self._merge_api_data(url, api_data) if api_data else None
 
-        # Extract data from page
-        extraction = extract_from_page(url, content)
-        if extraction.data:
-            self._extraction_state.add_extraction(extraction)
-            # Log extracted fields for debugging
-            for asset_id, fields in extraction.data.items():
-                field_names = list(fields.keys())[:3]
-                log("GT", f"  Extracted [{asset_id}]: {field_names}")
-        else:
-            log("GT", f"  No data extracted from {extraction.page_type} page")
+        # Single-line log: URL + collection info
+        url_short = url.split("//")[-1][:50]
+        if collected_info:
+            log("GT", f"Visit {url_short} → {collected_info}")
+        # Skip logging for pages without API data (navigation pages)
 
-        # Merge API data from page cache (for HYBRID templates)
-        if api_data:
-            self._merge_api_data(url, api_data)
-
-        # Track visited URLs for each subtask
-        # Note: API fetching is always deferred to end of trajectory
-        # This ensures GT matches what agent sees on pages
+        # Track visited URLs
         for subtask in self.subtasks:
-            tag = subtask.answer_tag
-            self._visited_urls[tag].append(url)
+            self._visited_urls[subtask.answer_tag].append(url)
 
-            source_type = self._get_source_type(subtask)
-
-            # Log trigger matches for debugging, but don't fetch during navigation
-            if source_type in (GTSourceType.HYBRID, GTSourceType.API_ONLY):
-                if self._should_trigger_api(url, subtask):
-                    log("GT", f"  Trigger matched for [{tag}] ({source_type.value} - deferred to end)")
-
-    def _merge_api_data(self, url: str, api_data: Dict[str, Any]):
+    def _merge_api_data(self, url: str, api_data: Dict[str, Any]) -> Optional[str]:
         """
         Merge API data from page cache into collected data.
 
-        Later visits override earlier visits (detail page overrides homepage).
+        Rules:
+        - Homepage bulk data: Only add NEW assets, don't overwrite existing
+        - Detail page data: Always overwrite (more accurate/recent)
 
-        Args:
-            url: The URL that was visited
-            api_data: API data bound to the page
+        Returns:
+            Description of what was collected, or None
         """
         url_lower = url.lower()
 
         if "coingecko.com" in url_lower:
             if "coins" in api_data:
-                # Homepage format: {"coins": {"bitcoin": {...}, "ethereum": {...}}}
+                # Homepage: bulk coins - only add new, don't overwrite
+                added = 0
                 for coin_id, data in api_data["coins"].items():
-                    self._collected_api_data[coin_id] = data
-                    log("GT", f"  Merged API [{coin_id}] from homepage")
+                    if coin_id not in self._collected_api_data:
+                        self._collected_api_data[coin_id] = data
+                        added += 1
+                if added > 0:
+                    return f"+{added} coins (total {len(self._collected_api_data)})"
+                return f"0 new (already have {len(api_data['coins'])} coins)"
             elif "id" in api_data:
-                # Detail page format: {"id": "bitcoin", "current_price": ...}
+                # Detail page: always overwrite (more accurate)
                 coin_id = api_data["id"]
+                change = api_data.get("price_change_percentage_24h")
                 self._collected_api_data[coin_id] = api_data
-                log("GT", f"  Merged API [{coin_id}] from detail page (override)")
-            else:
-                log("GT", f"  Unknown CoinGecko api_data format: {list(api_data.keys())[:5]}")
+                if change is not None:
+                    return f"{coin_id} 24h={change:+.2f}%"
+                return f"{coin_id}"
 
         elif "stooq.com" in url_lower:
             if "assets" in api_data:
-                # Homepage format: {"assets": {"aapl.us": {...}, "gc.f": {...}}}
+                # Homepage: bulk assets - only add new, don't overwrite
+                added = 0
                 for symbol, data in api_data["assets"].items():
-                    self._collected_api_data[symbol] = data
-                    log("GT", f"  Merged API [{symbol}] from homepage")
+                    if symbol not in self._collected_api_data:
+                        self._collected_api_data[symbol] = data
+                        added += 1
+                if added > 0:
+                    return f"+{added} assets (total {len(self._collected_api_data)})"
+                return f"0 new (already have {len(api_data['assets'])} assets)"
             elif "symbol" in api_data:
-                # Detail page format: {"symbol": "aapl.us", "close": ...}
+                # Detail page: always overwrite (more accurate)
                 symbol = api_data["symbol"]
+                change = api_data.get("daily_change_pct")
                 self._collected_api_data[symbol] = api_data
-                log("GT", f"  Merged API [{symbol}] from detail page (override)")
-            else:
-                log("GT", f"  Unknown Stooq api_data format: {list(api_data.keys())[:5]}")
+                if change is not None:
+                    return f"{symbol} 24h={change:+.2f}%"
+                return f"{symbol}"
+
+        elif "wttr.in" in url_lower or "weather" in url_lower:
+            # Extract location from api_data["location"], URL path, or nearest_area
+            location = api_data.get("location")
+            if not location:
+                # Try to extract from URL path (e.g., wttr.in/Hong+Kong)
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(url)
+                path = unquote(parsed.path).strip('/')
+                if path and not path.startswith('?'):
+                    location = path.replace('+', ' ')
+            if not location:
+                # Try to extract from nearest_area
+                nearest = api_data.get("nearest_area", [{}])
+                if nearest and isinstance(nearest, list) and len(nearest) > 0:
+                    area_name = nearest[0].get("areaName", [{}])
+                    if area_name and isinstance(area_name, list) and len(area_name) > 0:
+                        location = area_name[0].get("value", "")
+
+            if location and ("weather" in api_data or "current_condition" in api_data):
+                self._collected_api_data[location] = api_data
+                return f"weather[{location}]"
+
+        elif "taostats" in url_lower:
+            # Homepage/list page: {"subnets": {...}}
+            if "subnets" in api_data:
+                subnets = api_data["subnets"]
+                self._collected_api_data["taostats"] = api_data
+                return f"+{len(subnets)} subnets"
+            # Detail page: {"netuid": ..., "name": ..., ...}
+            elif "netuid" in api_data:
+                netuid = str(api_data["netuid"])
+                # Store under taostats.subnets.{netuid}
+                if "taostats" not in self._collected_api_data:
+                    self._collected_api_data["taostats"] = {"subnets": {}}
+                self._collected_api_data["taostats"]["subnets"][netuid] = api_data
+                name = api_data.get("name", f"SN{netuid}")
+                return f"subnet[{name}]"
+
+        return None
 
     def get_collected_api_data(self) -> Dict[str, Dict[str, Any]]:
         """Get all collected API data from page visits."""
@@ -268,128 +251,66 @@ class GTCollector:
             return
 
         try:
-            log("GT", f"Fetching API GT for [{tag}]...")
             result = await plugin.get_ground_truth(subtask.validation_info)
 
-            # Handle GroundTruthResult or raw value
             from liveweb_arena.core.ground_truth_trigger import GroundTruthResult
             if isinstance(result, GroundTruthResult):
                 if result.success:
                     self._api_results[tag] = result.value
-                    log("GT", f"API GT [{tag}]: {str(result.value)[:50]}...")
+                    # Show truncated result
+                    val_str = str(result.value)[:60]
+                    log("GT", f"[{tag}] = {val_str}{'...' if len(str(result.value)) > 60 else ''}")
                 else:
-                    log("GT", f"API GT [{tag}] failed: {result.error}")
+                    log("GT", f"[{tag}] FAILED: {result.error}")
             else:
                 self._api_results[tag] = result
-                log("GT", f"API GT [{tag}]: {str(result)[:50]}...")
+                val_str = str(result)[:60]
+                log("GT", f"[{tag}] = {val_str}{'...' if len(str(result)) > 60 else ''}")
 
         except Exception as e:
-            logger.warning(f"API GT fetch failed for {tag}: {e}")
+            logger.error(f"GT fetch failed for {tag}: {e}")
+            raise
 
     async def fetch_remaining_api_gt(self):
-        """
-        Fetch API GT for subtasks that weren't triggered during navigation.
-
-        Called at the end of agent trajectory for API_ONLY/HYBRID templates.
-        """
+        """Fetch API GT for all templates (PAGE_ONLY, API_ONLY, and HYBRID all use collected API data)."""
         for subtask in self.subtasks:
             tag = subtask.answer_tag
-            source_type = self._get_source_type(subtask)
-
-            if source_type in (GTSourceType.API_ONLY, GTSourceType.HYBRID):
-                if tag not in self._api_results:
-                    await self._fetch_api_gt(subtask)
+            if tag not in self._api_results:
+                await self._fetch_api_gt(subtask)
 
     def get_gt_for_subtask(self, subtask: "SubTask") -> Optional[str]:
-        """
-        Get formatted GT value for a subtask.
-
-        This is the main entry point for GT retrieval. It returns the GT value
-        based on the template's declared source type.
-
-        Args:
-            subtask: The subtask to get GT for
-
-        Returns:
-            Formatted GT string or None if unavailable
-        """
+        """Get GT value for a subtask."""
         tag = subtask.answer_tag
         source_type = self._get_source_type(subtask)
-        vi = subtask.validation_info
 
-        if source_type == GTSourceType.PAGE_ONLY:
-            # Only use page extraction
-            return self._extraction_state.get_gt_for_template(vi)
-
-        elif source_type == GTSourceType.API_ONLY:
-            # Only use API result
-            return self._api_results.get(tag)
-
-        elif source_type == GTSourceType.HYBRID:
-            # Try page extraction first, fall back to API
-            page_gt = self._extraction_state.get_gt_for_template(vi)
-            if page_gt is not None:
-                return page_gt
-
-            # Use API result as supplement
-            return self._api_results.get(tag)
-
-        return None
+        # All source types now use API results
+        return self._api_results.get(tag)
 
     def get_failure_reason(self, subtask: "SubTask") -> str:
-        """
-        Get detailed reason why GT collection failed for a subtask.
-
-        Args:
-            subtask: The subtask that failed
-
-        Returns:
-            Human-readable failure reason
-        """
+        """Get detailed reason why GT collection failed."""
         tag = subtask.answer_tag
-        source_type = self._get_source_type(subtask)
-        vi = subtask.validation_info
         visited = self._visited_urls.get(tag, [])
 
-        if source_type == GTSourceType.PAGE_ONLY:
-            reason = self._extraction_state.get_extraction_failure_reason(vi)
-            if visited:
-                return f"{reason}. Visited: {visited[:3]}"
-            return f"{reason}. No relevant pages visited."
+        if tag in self._api_results:
+            return "API returned invalid data"
 
-        elif source_type == GTSourceType.API_ONLY:
-            if tag in self._api_results:
-                return "API returned invalid data"
-            return "API was never triggered (agent didn't visit required pages)"
-
-        elif source_type == GTSourceType.HYBRID:
-            page_reason = self._extraction_state.get_extraction_failure_reason(vi)
-            api_status = "fetched" if tag in self._api_results else "not fetched"
-            return f"Page: {page_reason}. API: {api_status}"
-
-        return "Unknown failure"
-
-    def get_extraction_state(self) -> GTExtractionState:
-        """Get the underlying extraction state for direct access."""
-        return self._extraction_state
+        collected = list(self._collected_api_data.keys())[:5]
+        if collected:
+            return f"API GT not fetched. Collected data: {collected}. Visited: {visited[:3]}"
+        return f"No API data collected. Visited: {visited[:3]}"
 
     def get_stats(self) -> Dict[str, Any]:
         """Get collection statistics."""
-        page_count = len(self._extraction_state.extractions)
-        api_count = len(self._api_results)
-
         stats = {
             "total_subtasks": len(self.subtasks),
-            "page_extractions": page_count,
-            "api_fetches": api_count,
+            "api_fetches": len(self._api_results),
+            "collected_assets": len(self._collected_api_data),
         }
 
-        # Count by source type
         by_type = {t: 0 for t in GTSourceType}
         for subtask in self.subtasks:
             source_type = self._get_source_type(subtask)
             by_type[source_type] += 1
 
         stats["by_source_type"] = {t.value: c for t, c in by_type.items()}
-
         return stats

@@ -134,6 +134,23 @@ class BasePlugin(ABC):
         """
         return normalize_url(url)
 
+    def needs_api_data(self, url: str) -> bool:
+        """
+        Check if this URL needs API data for ground truth.
+
+        Override to return False for navigation/list pages that don't
+        contain evaluatable data (e.g., homepage, search pages).
+
+        Default: True (all pages need API data)
+
+        Args:
+            url: The page URL
+
+        Returns:
+            True if API data is needed, False for navigation-only pages
+        """
+        return True
+
     # ===== Deprecated methods (for backward compatibility) =====
     # These will be removed after full migration
 

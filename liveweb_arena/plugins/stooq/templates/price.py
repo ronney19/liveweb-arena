@@ -173,62 +173,62 @@ class StooqPriceTemplate(QuestionTemplate):
 - Score 0.0: Values differ by more than 2%"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """
-        Fetch ground truth from Stooq (via cached StooqClient).
-
-        Returns GroundTruthResult with the specific metric value as a string.
-        """
+        """Get ground truth from collected API data (no network fallback)."""
         symbol = validation_info.get("symbol", "")
         metric = validation_info.get("metric", "last_price")
         if not symbol:
             return GroundTruthResult.fail("No symbol provided")
 
-        try:
-            # Use centralized StooqClient (cache-aware)
-            data = await StooqClient.get_price_data(symbol)
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            if not data:
-                return GroundTruthResult.retry("Could not fetch price data")
+        collected = gt_collector.get_collected_api_data()
+        # Try both original and lowercase
+        data = collected.get(symbol) or collected.get(symbol.lower())
+        if not data:
+            return GroundTruthResult.fail(
+                f"Stooq data for '{symbol}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            close = data.get("close")
-            open_price = data.get("open")
-            high = data.get("high")
-            low = data.get("low")
-            change = data.get("daily_change")
-            change_pct = data.get("daily_change_pct")
+        close = data.get("close")
+        open_price = data.get("open")
+        high = data.get("high")
+        low = data.get("low")
+        change = data.get("daily_change")
+        change_pct = data.get("daily_change_pct")
 
-            # Return the specific metric requested
-            if metric == "last_price":
-                if close is None:
-                    return GroundTruthResult.fail("Could not parse close price")
-                return GroundTruthResult.ok(f"{close:.2f}")
-            elif metric == "change_percent":
-                if change_pct is None:
-                    return GroundTruthResult.fail("Could not calculate change percent")
-                return GroundTruthResult.ok(f"{change_pct:+.2f}%")
-            elif metric == "change_absolute":
-                if change is None:
-                    return GroundTruthResult.fail("Could not calculate change")
-                return GroundTruthResult.ok(f"{change:+.2f}")
-            elif metric == "open":
-                if open_price is None:
-                    return GroundTruthResult.fail("Could not parse open price")
-                return GroundTruthResult.ok(f"{open_price:.2f}")
-            elif metric == "high":
-                if high is None:
-                    return GroundTruthResult.fail("Could not parse high price")
-                return GroundTruthResult.ok(f"{high:.2f}")
-            elif metric == "low":
-                if low is None:
-                    return GroundTruthResult.fail("Could not parse low price")
-                return GroundTruthResult.ok(f"{low:.2f}")
-            else:
-                if close is None:
-                    return GroundTruthResult.fail("Could not parse close price")
-                return GroundTruthResult.ok(f"{close:.2f}")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching data: {e}")
+        # Return the specific metric requested
+        if metric == "last_price":
+            if close is None:
+                return GroundTruthResult.fail("Could not parse close price in collected data")
+            return GroundTruthResult.ok(f"{close:.2f}")
+        elif metric == "change_percent":
+            if change_pct is None:
+                return GroundTruthResult.fail("Could not calculate change percent from collected data")
+            return GroundTruthResult.ok(f"{change_pct:+.2f}%")
+        elif metric == "change_absolute":
+            if change is None:
+                return GroundTruthResult.fail("Could not calculate change from collected data")
+            return GroundTruthResult.ok(f"{change:+.2f}")
+        elif metric == "open":
+            if open_price is None:
+                return GroundTruthResult.fail("Could not parse open price in collected data")
+            return GroundTruthResult.ok(f"{open_price:.2f}")
+        elif metric == "high":
+            if high is None:
+                return GroundTruthResult.fail("Could not parse high price in collected data")
+            return GroundTruthResult.ok(f"{high:.2f}")
+        elif metric == "low":
+            if low is None:
+                return GroundTruthResult.fail("Could not parse low price in collected data")
+            return GroundTruthResult.ok(f"{low:.2f}")
+        else:
+            if close is None:
+                return GroundTruthResult.fail("Could not parse close price in collected data")
+            return GroundTruthResult.ok(f"{close:.2f}")
 
     def _parse_float(self, value: Any) -> Optional[float]:
         """Parse a value to float, returning None if invalid"""

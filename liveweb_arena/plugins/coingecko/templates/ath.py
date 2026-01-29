@@ -111,36 +111,40 @@ class CoinGeckoATHTemplate(QuestionTemplate):
 - Accept formats: "$69,000", "69000", "$69K", "69 thousand"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch ATH data from CoinGecko API."""
+        """Get ATH data from collected API data (no network fallback)."""
         coin_id = validation_info.get("coin_id", "")
         metric_type = validation_info.get("metric_type", "ath_price")
 
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(coin_id)
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            coin_data = data[0]
+        collected = gt_collector.get_collected_api_data()
+        if coin_id not in collected:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            if metric_type == "ath_price":
-                ath = coin_data.get("ath")
-                if ath is not None:
-                    return GroundTruthResult.ok(self._format_price(ath))
-                return GroundTruthResult.fail("ATH data not available")
+        coin_data = collected[coin_id]
 
-            elif metric_type == "ath_change_percentage":
-                ath_change = coin_data.get("ath_change_percentage")
-                if ath_change is not None:
-                    return GroundTruthResult.ok(f"{ath_change:.1f}%")
-                return GroundTruthResult.fail("ATH change percentage not available")
+        if metric_type == "ath_price":
+            ath = coin_data.get("ath")
+            if ath is not None:
+                return GroundTruthResult.ok(self._format_price(ath))
+            return GroundTruthResult.fail("ATH data not available in collected data")
 
-            return GroundTruthResult.fail(f"Unknown metric type: {metric_type}")
+        elif metric_type == "ath_change_percentage":
+            ath_change = coin_data.get("ath_change_percentage")
+            if ath_change is not None:
+                return GroundTruthResult.ok(f"{ath_change:.1f}%")
+            return GroundTruthResult.fail("ATH change percentage not available in collected data")
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        return GroundTruthResult.fail(f"Unknown metric type: {metric_type}")
 
     def _format_price(self, value: float) -> str:
         """Format price for display."""

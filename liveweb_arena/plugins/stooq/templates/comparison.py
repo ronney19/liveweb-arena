@@ -11,7 +11,6 @@ from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
 )
 from liveweb_arena.core.gt_collector import GTSourceType
-from liveweb_arena.plugins.stooq.api_client import StooqClient
 from .variables import (
     StockVariable, IndexVariable, US_STOCKS, INDICES,
     StockSpec, IndexSpec, InstrumentType,
@@ -162,24 +161,29 @@ class StooqComparisonTemplate(QuestionTemplate):
 - The answer must clearly state which instrument wins the comparison"""
 
     async def _fetch_instrument_data(self, symbol: str) -> GroundTruthResult:
-        """Fetch data for a single instrument (via cached StooqClient)"""
-        try:
-            data = await StooqClient.get_price_data(symbol)
+        """Fetch data for a single instrument from collected API data (no network fallback)."""
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            if not data:
-                return GroundTruthResult.retry(f"No data for {symbol}")
+        collected = gt_collector.get_collected_api_data()
+        # Try both original and lowercase
+        data = collected.get(symbol) or collected.get(symbol.lower())
+        if not data:
+            return GroundTruthResult.fail(
+                f"Stooq data for '{symbol}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            result = {
-                "symbol": symbol,
-                "close": data.get("close"),
-                "volume": data.get("volume"),
-                "change_percent": data.get("daily_change_pct"),
-            }
+        result = {
+            "symbol": symbol,
+            "close": data.get("close"),
+            "volume": data.get("volume"),
+            "change_percent": data.get("daily_change_pct"),
+        }
 
-            return GroundTruthResult.ok(result)
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching {symbol}: {e}")
+        return GroundTruthResult.ok(result)
 
     def _parse_float(self, value: Any) -> Optional[float]:
         if value is None:

@@ -13,8 +13,8 @@ from liveweb_arena.core.agent_policy import AgentPolicy
 from liveweb_arena.core.agent_loop import AgentLoop, BrowserFatalError
 from liveweb_arena.core.parser import AnswerParser
 from liveweb_arena.core.gt_collector import GTCollector, GTSourceType, set_current_gt_collector
-from liveweb_arena.core.cache import CacheManager, CachedPage, PageRequirement, normalize_url
-from liveweb_arena.core.interceptor import CacheInterceptor
+from liveweb_arena.core.cache import CacheManager, CachedPage, CacheFatalError, PageRequirement, normalize_url
+from liveweb_arena.core.interceptor import CacheInterceptor, clear_cached_accessibility_trees
 from liveweb_arena.plugins.base import BasePlugin
 from liveweb_arena.plugins import get_plugin, get_all_plugins
 from liveweb_arena.core.validators.llm_validator import validate_answers_with_llm
@@ -57,7 +57,12 @@ class Actor:
 
         # Initialize cache manager
         if cache_dir is None:
-            cache_dir = Path(__file__).parent / "cache"
+            # Check environment variable first
+            env_cache_dir = os.environ.get("LIVEWEB_CACHE_DIR")
+            if env_cache_dir:
+                cache_dir = Path(env_cache_dir)
+            else:
+                cache_dir = Path(__file__).parent / "cache"
         self.cache_manager = CacheManager(cache_dir)
 
     async def evaluate(
@@ -209,6 +214,9 @@ class Actor:
         # Create browser session
         session = await self.browser.new_session()
 
+        # Clear cached accessibility trees from previous runs
+        clear_cached_accessibility_trees()
+
         # Set up interceptor
         interceptor = CacheInterceptor(
             cached_pages=cached_pages,
@@ -256,35 +264,52 @@ class Actor:
                                 break
 
                         if plugin:
-                            try:
-                                # Fetch and cache the page
-                                pages = await self.cache_manager.ensure_cached(
-                                    [PageRequirement.data(url)],
-                                    plugin,
-                                )
-                                cached_pages.update(pages)
-                                log("Actor", f"Cached: {url[:60]}...")
-                            except Exception as e:
-                                log("Actor", f"Cache error: {e}")
+                            # Check if this page needs API data (detail page vs navigation page)
+                            need_api = plugin.needs_api_data(url)
+                            page_req = PageRequirement.data(url) if need_api else PageRequirement.nav(url)
 
-            # Post-step callback for real-time GT collection
-            async def on_step_complete(step):
-                """Called after each agent step to collect GT in real-time."""
-                if step.observation and step.observation.url:
-                    url = step.observation.url
+                            # Fetch and cache the page - raise fatal error on failure
+                            # Cache failure = browser can't load page = invalid evaluation
+                            pages = await self.cache_manager.ensure_cached(
+                                [page_req],
+                                plugin,
+                            )
+                            cached_pages.update(pages)
+                            req_type = "data" if need_api else "nav"
+                            log("Actor", f"Cached ({req_type}): {url[:55]}...")
+
+            # Observation callback for real-time GT collection (fires when page is viewed)
+            async def on_observation(obs):
+                """Called when agent observes a page (before deciding action)."""
+                if obs and obs.url:
+                    url = obs.url
                     if url and url != "about:blank":
-                        # Get api_data from cached page (for HYBRID GT)
+                        # Get api_data from cached page (CACHE mode) or fetch live (LIVE mode)
                         api_data = None
                         if self.use_cache:
+                            # CACHE mode: use cached api_data
                             normalized = normalize_url(url)
                             cached_page = cached_pages.get(normalized)
                             if cached_page:
                                 api_data = cached_page.api_data
+                        else:
+                            # LIVE mode: fetch api_data from network
+                            # This ensures GT matches what agent sees in real-time
+                            for p in plugins_used.values():
+                                for domain in p.allowed_domains:
+                                    if domain in url.lower():
+                                        try:
+                                            api_data = await p.fetch_api_data(url)
+                                        except Exception:
+                                            pass
+                                        break
+                                if api_data:
+                                    break
 
                         # Collect GT from this page visit
                         await gt_collector.on_page_visit(
                             url,
-                            step.observation.accessibility_tree,
+                            obs.accessibility_tree,
                             api_data=api_data,
                         )
 
@@ -294,7 +319,7 @@ class Actor:
                 policy=AgentPolicy(),
                 max_steps=effective_max_steps,
                 on_navigation=on_navigation,
-                on_step_complete=on_step_complete,
+                on_observation=on_observation,
             )
 
             # Track failure reasons
@@ -329,20 +354,20 @@ class Actor:
                 trajectory = agent_loop.get_trajectory()
                 final_answer = agent_loop.get_final_answer()
                 usage = agent_loop.get_usage()
+            except CacheFatalError as e:
+                failure_reason = "cache_error"
+                fatal_error_message = str(e)
+                log("Actor", f"Cache fatal error (page not loadable): {e}", force=True)
+                trajectory = agent_loop.get_trajectory()
+                final_answer = agent_loop.get_final_answer()
+                usage = agent_loop.get_usage()
 
-            # GT is collected in real-time via on_step_complete callback
-            # Set extraction state BEFORE fetching remaining GT so utils can access
-            # page-extracted data (ensures GT matches what agent sees on pages)
-            from liveweb_arena.plugins.hybrid.utils import set_extraction_state
-            set_extraction_state(gt_collector.get_extraction_state())
-
+            # GT is collected in real-time via on_observation callback
             # For API_ONLY and HYBRID templates, fetch remaining API GT
-            # HYBRID templates: API is called now (after all pages visited) to
-            # benefit from page-extracted data via set_extraction_state()
+            # HYBRID templates use collected api_data from page visits
             await gt_collector.fetch_remaining_api_gt()
 
-            # Clean up extraction state and GT collector reference
-            set_extraction_state(None)
+            # Clean up GT collector reference
             set_current_gt_collector(None)
 
             # Build ground truths based on template's declared source type
@@ -351,23 +376,18 @@ class Actor:
 
             for subtask in task.subtasks:
                 tag = subtask.answer_tag
-
-                # GTCollector handles source type selection internally
                 gt_value = gt_collector.get_gt_for_subtask(subtask)
 
                 if gt_value is not None:
                     ground_truths[tag] = gt_value
-                    log("Actor", f"GT [{tag}]: {gt_value}")
                 else:
-                    # GT collection failed - get detailed reason
                     reason = gt_collector.get_failure_reason(subtask)
                     gt_extraction_failures[tag] = reason
                     log("Actor", f"GT [{tag}] FAILED: {reason}", force=True)
 
-            # Log GT summary with source type info
+            # Single summary line
             stats = gt_collector.get_stats()
-            log("Actor", f"GT Summary: {len(ground_truths)} extracted, {len(gt_extraction_failures)} failed")
-            log("Actor", f"GT Sources: {stats['by_source_type']}")
+            log("Actor", f"GT: {len(ground_truths)} ok, {len(gt_extraction_failures)} failed, {stats['collected_assets']} assets collected")
 
             # Parse answers
             parser = AnswerParser()

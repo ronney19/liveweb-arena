@@ -69,23 +69,29 @@ class CoinGeckoRankTemplate(QuestionTemplate):
 - Note: Lower rank number = higher market cap (rank 1 is highest)"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch market rank from CoinGecko API."""
+        """Get market rank from collected API data (no network fallback)."""
         coin_id = validation_info.get("coin_id", "")
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(coin_id)
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            rank = data[0].get("market_cap_rank")
-            if rank is not None:
-                return GroundTruthResult.ok(f"#{rank}")
+        collected = gt_collector.get_collected_api_data()
+        if coin_id not in collected:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            return GroundTruthResult.fail("Missing market cap rank data")
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        coin_data = collected[coin_id]
+        rank = coin_data.get("market_cap_rank")
+        if rank is not None:
+            return GroundTruthResult.ok(f"#{rank}")
+
+        return GroundTruthResult.fail("Missing market cap rank data in collected data")
 
     async def validate_answer(
         self,

@@ -99,60 +99,49 @@ class CoinGeckoTopMoversTemplate(QuestionTemplate):
 - Percentage tolerance: 10pp (data changes frequently)"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch top gainer/loser from CoinGecko API."""
+        """Get top gainer/loser from collected API data (no network fallback)."""
         query_type = validation_info.get("query_type", "gainer")
 
-        try:
-            # Get top 100 coins by market cap and sort by 24h change
-            data = await CoinGeckoClient.get(
-                "/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": "100",
-                    "page": "1",
-                    "sparkline": "false",
-                    "price_change_percentage": "24h",
-                }
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
+
+        collected = gt_collector.get_collected_api_data()
+        if not collected:
+            return GroundTruthResult.fail("No coins collected. Agent must visit CoinGecko.")
+
+        # Convert collected dict to list for sorting
+        valid_coins = []
+        for coin_id, data in collected.items():
+            if isinstance(data, dict) and data.get("price_change_percentage_24h") is not None:
+                valid_coins.append(data)
+
+        if not valid_coins:
+            return GroundTruthResult.fail("No valid coins with 24h change data in collected")
+
+        # Sort by 24h change
+        if query_type == "gainer":
+            sorted_coins = sorted(
+                valid_coins,
+                key=lambda x: x.get("price_change_percentage_24h", 0),
+                reverse=True
+            )
+        else:
+            sorted_coins = sorted(
+                valid_coins,
+                key=lambda x: x.get("price_change_percentage_24h", 0),
+                reverse=False
             )
 
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        top_coin = sorted_coins[0]
+        name = top_coin.get("name", "Unknown")
+        change = top_coin.get("price_change_percentage_24h", 0)
 
-            # Filter out coins with None change
-            valid_coins = [
-                c for c in data
-                if c.get("price_change_percentage_24h") is not None
-            ]
-
-            if not valid_coins:
-                return GroundTruthResult.fail("No valid coins with 24h change data")
-
-            # Sort by 24h change
-            if query_type == "gainer":
-                sorted_coins = sorted(
-                    valid_coins,
-                    key=lambda x: x.get("price_change_percentage_24h", 0),
-                    reverse=True
-                )
-            else:
-                sorted_coins = sorted(
-                    valid_coins,
-                    key=lambda x: x.get("price_change_percentage_24h", 0),
-                    reverse=False
-                )
-
-            top_coin = sorted_coins[0]
-            name = top_coin.get("name", "Unknown")
-            change = top_coin.get("price_change_percentage_24h", 0)
-
-            if query_type == "gainer":
-                return GroundTruthResult.ok(f"{name} (+{change:.2f}%)")
-            else:
-                return GroundTruthResult.ok(f"{name} ({change:.2f}%)")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        if query_type == "gainer":
+            return GroundTruthResult.ok(f"{name} (+{change:.2f}%)")
+        else:
+            return GroundTruthResult.ok(f"{name} ({change:.2f}%)")
 
     async def validate_answer(
         self,

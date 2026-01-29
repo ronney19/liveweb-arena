@@ -101,7 +101,7 @@ class CoinGeckoComparisonTemplate(QuestionTemplate):
 - Accept formats: "{coin1}", "{coin1} is higher", "{coin1} has more", "Yes" (if question is "Is X > Y?")"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch comparison data from CoinGecko API."""
+        """Get comparison data from collected API data (no network fallback)."""
         coin1_id = validation_info.get("coin1_id", "")
         coin2_id = validation_info.get("coin2_id", "")
         coin1_name = validation_info.get("coin1_name", "")
@@ -111,47 +111,51 @@ class CoinGeckoComparisonTemplate(QuestionTemplate):
         if not coin1_id or not coin2_id:
             return GroundTruthResult.fail("Missing coin IDs")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(f"{coin1_id},{coin2_id}")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            if not data or len(data) < 2:
-                return GroundTruthResult.retry("Incomplete data from CoinGecko API")
+        collected = gt_collector.get_collected_api_data()
 
-            # Find each coin's data
-            coin1_data = next((d for d in data if d["id"] == coin1_id), None)
-            coin2_data = next((d for d in data if d["id"] == coin2_id), None)
+        # Check both coins are collected
+        missing = []
+        if coin1_id not in collected:
+            missing.append(coin1_id)
+        if coin2_id not in collected:
+            missing.append(coin2_id)
+        if missing:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for {missing} not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            if not coin1_data or not coin2_data:
-                return GroundTruthResult.fail("Could not find data for both coins")
+        coin1_data = collected[coin1_id]
+        coin2_data = collected[coin2_id]
 
-            # Get comparison values
-            if comp_type == "price":
-                val1 = coin1_data.get("current_price")
-                val2 = coin2_data.get("current_price")
-                if val1 is None or val2 is None:
-                    return GroundTruthResult.fail(f"Missing price data: {coin1_name}={val1}, {coin2_name}={val2}")
-            elif comp_type == "market_cap":
-                val1 = coin1_data.get("market_cap")
-                val2 = coin2_data.get("market_cap")
-                # market_cap can be 0 or None for some coins (e.g., no circulating supply data)
-                if val1 is None or val2 is None or val1 == 0 or val2 == 0:
-                    return GroundTruthResult.fail(
-                        f"Invalid market cap data: {coin1_name}={val1}, {coin2_name}={val2}. "
-                        "Some coins lack circulating supply data."
-                    )
-            else:  # volume
-                val1 = coin1_data.get("total_volume")
-                val2 = coin2_data.get("total_volume")
-                if val1 is None or val2 is None:
-                    return GroundTruthResult.fail(f"Missing volume data: {coin1_name}={val1}, {coin2_name}={val2}")
+        # Get comparison values
+        if comp_type == "price":
+            val1 = coin1_data.get("current_price")
+            val2 = coin2_data.get("current_price")
+            if val1 is None or val2 is None:
+                return GroundTruthResult.fail(f"Missing price data: {coin1_name}={val1}, {coin2_name}={val2}")
+        elif comp_type == "market_cap":
+            val1 = coin1_data.get("market_cap")
+            val2 = coin2_data.get("market_cap")
+            if val1 is None or val2 is None or val1 == 0 or val2 == 0:
+                return GroundTruthResult.fail(
+                    f"Invalid market cap data: {coin1_name}={val1}, {coin2_name}={val2}."
+                )
+        else:  # volume
+            val1 = coin1_data.get("total_volume")
+            val2 = coin2_data.get("total_volume")
+            if val1 is None or val2 is None:
+                return GroundTruthResult.fail(f"Missing volume data: {coin1_name}={val1}, {coin2_name}={val2}")
 
-            if val1 > val2:
-                return GroundTruthResult.ok(f"{coin1_name} (${val1:,.2f} vs ${val2:,.2f})")
-            else:
-                return GroundTruthResult.ok(f"{coin2_name} (${val2:,.2f} vs ${val1:,.2f})")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        if val1 > val2:
+            return GroundTruthResult.ok(f"{coin1_name} (${val1:,.2f} vs ${val2:,.2f})")
+        else:
+            return GroundTruthResult.ok(f"{coin2_name} (${val2:,.2f} vs ${val1:,.2f})")
 
     async def validate_answer(
         self,

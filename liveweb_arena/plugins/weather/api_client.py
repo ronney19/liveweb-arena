@@ -8,6 +8,7 @@ import aiohttp
 import httpx
 
 from liveweb_arena.plugins.base_client import BaseAPIClient, RateLimiter
+from liveweb_arena.utils.logger import log
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +132,7 @@ async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
                             return
                         data = await response.json()
                         result["locations"][location] = data
-            except Exception as e:
-                logger.debug(f"Failed to fetch weather for {location}: {e}")
+            except Exception:
                 failed += 1
 
     await asyncio.gather(*[fetch_one(loc) for loc in locations])
@@ -154,8 +154,6 @@ async def fetch_single_location_data(location: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with weather JSON data, or empty dict on error
     """
-    logger.debug(f"Fetching weather data for {location}...")
-
     try:
         async with aiohttp.ClientSession() as session:
             url = f"https://wttr.in/{location}?format=j1"
@@ -169,6 +167,5 @@ async def fetch_single_location_data(location: str) -> Optional[Dict[str, Any]]:
                     return {}
                 return await response.json()
 
-    except Exception as e:
-        logger.debug(f"Failed to fetch weather for {location}: {e}")
+    except Exception:
         return {}

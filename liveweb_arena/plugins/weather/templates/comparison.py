@@ -11,7 +11,6 @@ from liveweb_arena.core.ground_truth_trigger import (
 )
 from liveweb_arena.core.gt_collector import GTSourceType
 from .variables import LocationVariable, LocationSpec, LocationType
-from ..api_client import WeatherClient
 
 
 # Major city pairs from different climate zones for interesting comparisons
@@ -108,7 +107,7 @@ class WeatherComparisonTemplate(QuestionTemplate):
 - Accept: "{city1}", "{city1} is warmer", "It's hotter in {city1}", temperature values with comparison"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch temperatures for both cities from wttr.in API."""
+        """Get temperatures for both cities from collected API data (no network fallback)."""
         city1_query = validation_info.get("city1_query", "")
         city2_query = validation_info.get("city2_query", "")
         city1_name = validation_info.get("city1_name", "")
@@ -117,30 +116,43 @@ class WeatherComparisonTemplate(QuestionTemplate):
         if not city1_query or not city2_query:
             return GroundTruthResult.fail("Missing city queries")
 
-        try:
-            # Fetch city1 temperature
-            data1 = await WeatherClient.get_weather_data(city1_query)
-            if data1 is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {city1_name}")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            # Fetch city2 temperature
-            data2 = await WeatherClient.get_weather_data(city2_query)
-            if data2 is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {city2_name}")
+        collected = gt_collector.get_collected_api_data()
 
-            # Get current temperatures
-            temp1 = int(data1.get("current_condition", [{}])[0].get("temp_C", 0))
-            temp2 = int(data2.get("current_condition", [{}])[0].get("temp_C", 0))
+        # Helper to find city data with variants
+        def find_city_data(query, name):
+            city_name = query.split(",")[0].strip() if "," in query else query
+            variants = [
+                query, city_name,
+                city_name.replace('+', ' '), query.replace('+', ' '),
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    return collected[loc_key]
+            return None
 
-            if temp1 > temp2:
-                return GroundTruthResult.ok(f"{city1_name} ({temp1}°C vs {temp2}°C)")
-            elif temp2 > temp1:
-                return GroundTruthResult.ok(f"{city2_name} ({temp2}°C vs {temp1}°C)")
-            else:
-                return GroundTruthResult.ok(f"Same temperature ({temp1}°C)")
+        data1 = find_city_data(city1_query, city1_name)
+        if data1 is None:
+            return GroundTruthResult.fail(f"Weather data for '{city1_name}' not collected")
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        data2 = find_city_data(city2_query, city2_name)
+        if data2 is None:
+            return GroundTruthResult.fail(f"Weather data for '{city2_name}' not collected")
+
+        # Get current temperatures
+        temp1 = int(data1.get("current_condition", [{}])[0].get("temp_C", 0))
+        temp2 = int(data2.get("current_condition", [{}])[0].get("temp_C", 0))
+
+        if temp1 > temp2:
+            return GroundTruthResult.ok(f"{city1_name} ({temp1}°C vs {temp2}°C)")
+        elif temp2 > temp1:
+            return GroundTruthResult.ok(f"{city2_name} ({temp2}°C vs {temp1}°C)")
+        else:
+            return GroundTruthResult.ok(f"Same temperature ({temp1}°C)")
 
     async def validate_answer(
         self,
@@ -214,7 +226,7 @@ class WeatherComparisonTemplate(QuestionTemplate):
         """Trigger when AI visits the second city's page."""
         city2_query = validation_info.get("city2_query", "")
         trigger = UrlPatternTrigger(
-            domains=["wttr.in", "v2.wttr.in"],
+            domains=["wttr.in"],
             url_contains=city2_query.replace("+", " ").split(",")[0] if city2_query else None,
         )
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)

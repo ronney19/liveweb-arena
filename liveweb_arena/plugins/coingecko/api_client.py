@@ -253,8 +253,6 @@ async def fetch_single_coin_data(coin_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with coin market data, or empty dict on error
     """
-    logger.debug(f"Fetching CoinGecko data for {coin_id}...")
-
     try:
         async with aiohttp.ClientSession() as session:
             headers = CoinGeckoClient.get_headers()

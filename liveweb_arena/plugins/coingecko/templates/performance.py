@@ -210,36 +210,42 @@ class CoinGeckoPerformanceTemplate(QuestionTemplate):
 - Accept formats: "+5.2%", "-3.1%", "up 5%", "down 3%", "declined 18%"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch 7-day performance data from CoinGecko API."""
+        """Get 7-day performance data from collected API data (no network fallback)."""
         perf_type = validation_info.get("perf_type", "single_7d")
 
-        try:
-            if "compare" in perf_type:
-                return await self._get_comparison_truth(validation_info)
-            else:
-                return await self._get_single_truth(validation_info)
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        if "compare" in perf_type:
+            return await self._get_comparison_truth(validation_info)
+        else:
+            return await self._get_single_truth(validation_info)
 
     async def _get_single_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Get ground truth for single coin 7-day performance."""
+        """Get ground truth for single coin 7-day performance from collected data."""
         coin_id = validation_info.get("coin_id", "")
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        data = await self._fetch_with_price_change(coin_id)
-        if not data:
-            return GroundTruthResult.retry("No data returned from CoinGecko API")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-        change = data[0].get("price_change_percentage_7d_in_currency")
+        collected = gt_collector.get_collected_api_data()
+        if coin_id not in collected:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
+
+        coin_data = collected[coin_id]
+        change = coin_data.get("price_change_percentage_7d_in_currency")
         if change is None:
-            return GroundTruthResult.fail("7-day price change data not available")
+            return GroundTruthResult.fail("7-day price change data not available in collected data")
 
         sign = "+" if change >= 0 else ""
         return GroundTruthResult.ok(f"{sign}{change:.2f}%")
 
     async def _get_comparison_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Get ground truth for 7-day performance comparison."""
+        """Get ground truth for 7-day performance comparison from collected data."""
         coin1_id = validation_info.get("coin1_id", "")
         coin2_id = validation_info.get("coin2_id", "")
         coin1_name = validation_info.get("coin1_name", "")
@@ -248,23 +254,31 @@ class CoinGeckoPerformanceTemplate(QuestionTemplate):
         if not coin1_id or not coin2_id:
             return GroundTruthResult.fail("Missing coin IDs for comparison")
 
-        # Fetch both coins
-        data = await self._fetch_with_price_change(f"{coin1_id},{coin2_id}")
-        if not data or len(data) < 2:
-            return GroundTruthResult.retry("Could not fetch data for both coins")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-        # Find data for each coin
-        coin1_data = next((d for d in data if d.get("id") == coin1_id), None)
-        coin2_data = next((d for d in data if d.get("id") == coin2_id), None)
+        collected = gt_collector.get_collected_api_data()
+        missing = []
+        if coin1_id not in collected:
+            missing.append(coin1_id)
+        if coin2_id not in collected:
+            missing.append(coin2_id)
+        if missing:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for {missing} not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-        if not coin1_data or not coin2_data:
-            return GroundTruthResult.retry("Could not find data for both coins")
+        coin1_data = collected[coin1_id]
+        coin2_data = collected[coin2_id]
 
         change1 = coin1_data.get("price_change_percentage_7d_in_currency")
         change2 = coin2_data.get("price_change_percentage_7d_in_currency")
 
         if change1 is None or change2 is None:
-            return GroundTruthResult.fail("7-day price change data not available")
+            return GroundTruthResult.fail("7-day price change data not available in collected data")
 
         # Determine winner (higher change is better)
         if change1 > change2:
@@ -283,15 +297,6 @@ class CoinGeckoPerformanceTemplate(QuestionTemplate):
         return GroundTruthResult.ok(
             f"{winner} ({sign1}{winner_change:.2f}% vs {sign2}{loser_change:.2f}%)"
         )
-
-    async def _fetch_with_price_change(self, coin_ids: str) -> Optional[List[Dict]]:
-        """Fetch coin data with 7-day price change."""
-        params = {
-            "vs_currency": "usd",
-            "ids": coin_ids,
-            "price_change_percentage": "7d",
-        }
-        return await CoinGeckoClient.get("/coins/markets", params)
 
     async def validate_answer(
         self,

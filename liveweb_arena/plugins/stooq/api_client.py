@@ -279,8 +279,7 @@ async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
                         if parsed:
                             result["assets"][symbol] = parsed
 
-            except Exception as e:
-                logger.debug(f"Failed to fetch {symbol}: {e}")
+            except Exception:
                 failed += 1
 
     # Fetch all with concurrency control
@@ -311,29 +310,47 @@ async def fetch_homepage_api_data() -> Dict[str, Any]:
 
 
 async def fetch_single_asset_data(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch price data for a single asset."""
+    """
+    Fetch price data for a single asset.
+
+    Tries the symbol as-is first, then with common suffixes (.us)
+    since Stooq's CSV API requires suffixed symbols for some markets.
+    """
     global _rate_limited
 
     if _rate_limited:
         return {}
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-            async with session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=15),
-                headers={"User-Agent": "Mozilla/5.0"},
-            ) as response:
-                if response.status != 200:
-                    return {}
+    # Try symbol variants: as-is, then with .us suffix
+    variants = [symbol]
+    if "." not in symbol and not symbol.startswith("^"):
+        variants.append(f"{symbol}.us")
 
-                text = await response.text()
-                if "Exceeded the daily hits limit" in text:
-                    _rate_limited = True
-                    return {}
+    for sym in variants:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                ) as response:
+                    if response.status != 200:
+                        continue
 
-                return _parse_stooq_csv(text, symbol) or {}
+                    text = await response.text()
+                    if "Exceeded the daily hits limit" in text:
+                        _rate_limited = True
+                        return {}
 
-    except Exception:
-        return {}
+                    if "No data" in text:
+                        continue
+
+                    result = _parse_stooq_csv(text, symbol)
+                    if result:
+                        return result
+
+        except Exception:
+            continue
+
+    return {}

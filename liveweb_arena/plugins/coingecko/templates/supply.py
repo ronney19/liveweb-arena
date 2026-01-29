@@ -151,43 +151,47 @@ class CoinGeckoSupplyTemplate(QuestionTemplate):
 - Note: Circulating < Total <= Max (when max exists)"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch supply data from CoinGecko API."""
+        """Get supply data from collected API data (no network fallback)."""
         coin_id = validation_info.get("coin_id", "")
         metric_type = validation_info.get("metric_type", "circulating_supply")
 
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(coin_id)
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            coin_data = data[0]
+        collected = gt_collector.get_collected_api_data()
+        if coin_id not in collected:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            if metric_type == "circulating_supply":
-                value = coin_data.get("circulating_supply")
-            elif metric_type == "total_supply":
-                value = coin_data.get("total_supply")
-            elif metric_type == "max_supply":
-                value = coin_data.get("max_supply")
-            elif metric_type == "circulating_percentage":
-                circulating = coin_data.get("circulating_supply")
-                max_supply = coin_data.get("max_supply")
-                if circulating and max_supply:
-                    percentage = (circulating / max_supply) * 100
-                    return GroundTruthResult.ok(f"{percentage:.1f}%")
-                return GroundTruthResult.fail("Missing circulating or max supply data")
-            else:
-                return GroundTruthResult.fail(f"Unknown metric type: {metric_type}")
+        coin_data = collected[coin_id]
 
-            if value is None:
-                return GroundTruthResult.fail(f"Missing {metric_type} data")
+        if metric_type == "circulating_supply":
+            value = coin_data.get("circulating_supply")
+        elif metric_type == "total_supply":
+            value = coin_data.get("total_supply")
+        elif metric_type == "max_supply":
+            value = coin_data.get("max_supply")
+        elif metric_type == "circulating_percentage":
+            circulating = coin_data.get("circulating_supply")
+            max_supply = coin_data.get("max_supply")
+            if circulating and max_supply:
+                percentage = (circulating / max_supply) * 100
+                return GroundTruthResult.ok(f"{percentage:.1f}%")
+            return GroundTruthResult.fail("Missing circulating or max supply data")
+        else:
+            return GroundTruthResult.fail(f"Unknown metric type: {metric_type}")
 
-            return GroundTruthResult.ok(self._format_supply(value))
+        if value is None:
+            return GroundTruthResult.fail(f"Missing {metric_type} data in collected data")
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        return GroundTruthResult.ok(self._format_supply(value))
 
     def _format_supply(self, value: float) -> str:
         """Format supply number for display."""

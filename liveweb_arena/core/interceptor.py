@@ -50,6 +50,22 @@ class InterceptorStats:
         }
 
 
+# Global storage for cached accessibility trees (URL -> tree)
+# Used by browser to return deterministic content in cache mode
+_cached_accessibility_trees: Dict[str, str] = {}
+
+
+def get_cached_accessibility_tree(url: str) -> Optional[str]:
+    """Get cached accessibility tree for URL."""
+    normalized = normalize_url(url)
+    return _cached_accessibility_trees.get(normalized)
+
+
+def clear_cached_accessibility_trees():
+    """Clear all cached accessibility trees."""
+    _cached_accessibility_trees.clear()
+
+
 class CacheInterceptor:
     """
     Intercepts browser requests and serves from cache.
@@ -70,8 +86,10 @@ class CacheInterceptor:
         r"googleadservices\.com",
         r"google\.com/recaptcha",
         r"doubleclick\.net",
-        # Social
+        # Social widgets
         r"facebook\.com/tr",
+        r"platform\.twitter\.com",
+        r"syndication\.twitter\.com",
         # Analytics
         r"hotjar\.com",
         r"sentry\.io",
@@ -141,8 +159,9 @@ class CacheInterceptor:
         all_block_patterns = list(self.BLOCK_PATTERNS)
         if blocked_patterns:
             for pattern in blocked_patterns:
-                # Convert glob to regex
-                regex_pattern = pattern.replace("*", ".*")
+                # Convert glob to regex with proper escaping
+                # Escape all regex special chars except *, then replace * with .*
+                regex_pattern = re.escape(pattern).replace(r"\*", ".*")
                 all_block_patterns.append(regex_pattern)
 
         self._block_patterns = [re.compile(p, re.IGNORECASE) for p in all_block_patterns]
@@ -200,6 +219,10 @@ class CacheInterceptor:
             self.stats.hits += 1
             log("Intercept", f"HIT document - {self._url_display(url)}")
 
+            # Store cached accessibility tree for deterministic evaluation
+            if page.accessibility_tree:
+                _cached_accessibility_trees[normalized] = page.accessibility_tree
+
             await route.fulfill(
                 status=200,
                 headers={"content-type": "text/html; charset=utf-8"},
@@ -249,7 +272,11 @@ class CacheInterceptor:
             await route.abort("blockedbyclient")
 
     def _find_cached_page(self, url: str) -> Optional[CachedPage]:
-        """Find cached page for URL."""
+        """Find cached page for URL.
+
+        Only returns pages that are complete (have API data if needed).
+        Incomplete pages are ignored to allow on_navigation to fetch fresh data.
+        """
         normalized = normalize_url(url)
         parsed = urlparse(normalized)
 
@@ -270,10 +297,13 @@ class CacheInterceptor:
                 return self._url_map[with_www]
 
         # Try file cache with all URL variations
+        # Note: We only use complete pages from file cache.
+        # Incomplete pages (need API but missing) are skipped - on_navigation
+        # will fetch complete data and add to cached_pages.
         if self.cache_manager:
             # Try original URL
             page = self.cache_manager.get_cached(url)
-            if page and not page.is_expired(self.cache_manager.ttl):
+            if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
                 self._url_map[normalized] = page
                 return page
 
@@ -281,7 +311,7 @@ class CacheInterceptor:
             if parsed.netloc.startswith("www."):
                 no_www_url = url.replace("www.", "", 1)
                 page = self.cache_manager.get_cached(no_www_url)
-                if page and not page.is_expired(self.cache_manager.ttl):
+                if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
                     self._url_map[normalized] = page
                     return page
 
@@ -289,7 +319,7 @@ class CacheInterceptor:
             if not parsed.netloc.startswith("www."):
                 with_www_url = url.replace("://", "://www.", 1)
                 page = self.cache_manager.get_cached(with_www_url)
-                if page and not page.is_expired(self.cache_manager.ttl):
+                if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
                     self._url_map[normalized] = page
                     return page
 

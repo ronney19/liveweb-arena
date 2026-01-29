@@ -67,28 +67,35 @@ class CoinGeckoVolumeTemplate(QuestionTemplate):
 - Accept formats: $1.2B, $1.2 billion, 1200000000, 1.2B USD"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch 24h volume from CoinGecko API."""
+        """Get 24h volume from collected API data (no network fallback)."""
         coin_id = validation_info.get("coin_id", "")
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(coin_id)
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        # Get data from collected API data only
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            volume = data[0].get("total_volume")
-            if volume is not None:
-                if volume >= 1e9:
-                    return GroundTruthResult.ok(f"${volume/1e9:.2f} billion")
-                elif volume >= 1e6:
-                    return GroundTruthResult.ok(f"${volume/1e6:.2f} million")
-                else:
-                    return GroundTruthResult.ok(f"${volume:,.0f}")
+        collected = gt_collector.get_collected_api_data()
+        if coin_id not in collected:
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            return GroundTruthResult.fail("Missing volume data")
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        coin_data = collected[coin_id]
+        volume = coin_data.get("total_volume")
+        if volume is not None:
+            if volume >= 1e9:
+                return GroundTruthResult.ok(f"${volume/1e9:.2f} billion")
+            elif volume >= 1e6:
+                return GroundTruthResult.ok(f"${volume/1e6:.2f} million")
+            else:
+                return GroundTruthResult.ok(f"${volume:,.0f}")
+
+        return GroundTruthResult.fail("Missing volume data in collected data")
 
     async def validate_answer(
         self,

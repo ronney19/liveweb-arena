@@ -241,54 +241,61 @@ class CoinGeckoPriceTemplate(QuestionTemplate):
 - Accept formats: $45,123.45, 45123.45, $45,123"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch current price data from CoinGecko API."""
+        """Get price data from collected API data (no network fallback)."""
         coin_id = validation_info.get("coin_id", "")
         metric_type = validation_info.get("metric_type", "current_price")
 
         if not coin_id:
             return GroundTruthResult.fail("No coin_id provided")
 
-        try:
-            data = await CoinGeckoClient.get_coin_market_data(coin_id)
-            if not data:
-                return GroundTruthResult.retry("No data returned from CoinGecko API")
+        # Get data from collected API data only (no network fallback)
+        coin_data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            if coin_id in collected:
+                coin_data = collected[coin_id]
 
-            coin_data = data[0]
+        if coin_data is None:
+            collected_keys = list(collected.keys())[:10] if gt_collector else []
+            return GroundTruthResult.fail(
+                f"CoinGecko data for '{coin_id}' not collected. "
+                f"Agent must visit the page. Collected: {collected_keys}"
+            )
 
-            if metric_type == "current_price":
-                price = coin_data.get("current_price")
-                if price is not None:
-                    # Format with appropriate decimal places for small prices
-                    if price >= 1:
-                        return GroundTruthResult.ok(f"${price:,.2f}")
-                    elif price >= 0.01:
-                        return GroundTruthResult.ok(f"${price:.4f}")
-                    elif price >= 0.0001:
-                        return GroundTruthResult.ok(f"${price:.6f}")
-                    else:
-                        # Very small prices (meme coins)
-                        return GroundTruthResult.ok(f"${price:.10f}")
+        # Extract value based on metric type
+        if metric_type == "current_price":
+            price = coin_data.get("current_price")
+            if price is not None:
+                # Format with appropriate decimal places for small prices
+                if price >= 1:
+                    return GroundTruthResult.ok(f"${price:,.2f}")
+                elif price >= 0.01:
+                    return GroundTruthResult.ok(f"${price:.4f}")
+                elif price >= 0.0001:
+                    return GroundTruthResult.ok(f"${price:.6f}")
+                else:
+                    # Very small prices (meme coins)
+                    return GroundTruthResult.ok(f"${price:.10f}")
 
-            elif metric_type == "change_24h":
-                change = coin_data.get("price_change_percentage_24h")
-                if change is not None:
-                    sign = "+" if change >= 0 else ""
-                    return GroundTruthResult.ok(f"{sign}{change:.2f}%")
+        elif metric_type == "change_24h":
+            change = coin_data.get("price_change_percentage_24h")
+            if change is not None:
+                sign = "+" if change >= 0 else ""
+                return GroundTruthResult.ok(f"{sign}{change:.2f}%")
 
-            elif metric_type == "market_cap":
-                cap = coin_data.get("market_cap")
-                if cap is not None:
-                    if cap >= 1e12:
-                        return GroundTruthResult.ok(f"${cap/1e12:.2f} trillion")
-                    elif cap >= 1e9:
-                        return GroundTruthResult.ok(f"${cap/1e9:.2f} billion")
-                    else:
-                        return GroundTruthResult.ok(f"${cap:,.0f}")
+        elif metric_type == "market_cap":
+            cap = coin_data.get("market_cap")
+            if cap is not None:
+                if cap >= 1e12:
+                    return GroundTruthResult.ok(f"${cap/1e12:.2f} trillion")
+                elif cap >= 1e9:
+                    return GroundTruthResult.ok(f"${cap/1e9:.2f} billion")
+                else:
+                    return GroundTruthResult.ok(f"${cap:,.0f}")
 
-            return GroundTruthResult.fail(f"Missing {metric_type} data")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        return GroundTruthResult.fail(f"Missing {metric_type} data in collected data")
 
     async def validate_answer(
         self,

@@ -12,7 +12,6 @@ from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
 )
 from liveweb_arena.core.gt_collector import GTSourceType
-from liveweb_arena.plugins.stooq.api_client import StooqClient
 from .variables import (
     US_STOCKS, INDICES, StockSpec, IndexSpec, InstrumentType,
 )
@@ -168,47 +167,16 @@ class Stooq52WeekTemplate(QuestionTemplate):
 
     async def _fetch_52week_data(self, symbol: str) -> GroundTruthResult:
         """
-        Fetch 52-week data from Stooq (via StooqClient).
+        Fetch 52-week data from collected API data.
 
-        Returns GroundTruthResult with dict: current_price, high_52w, low_52w
+        Note: 52-week high/low calculations require historical data spanning 252 trading days.
+        This data is not available in the standard collected cache which only stores current day data.
         """
-        try:
-            # Use historical data for 52-week calculations
-            rows = await StooqClient.get_historical_data(symbol)
-
-            if not rows or len(rows) < 10:
-                return GroundTruthResult.retry(f"Insufficient data for {symbol}")
-
-            # Get last 252 trading days (approximately 1 year)
-            year_data = rows[-252:] if len(rows) >= 252 else rows
-
-            # Extract high and low from the period
-            highs = []
-            lows = []
-            for row in year_data:
-                high = self._parse_float(row.get("High"))
-                low = self._parse_float(row.get("Low"))
-                if high is not None:
-                    highs.append(high)
-                if low is not None:
-                    lows.append(low)
-
-            if not highs or not lows:
-                return GroundTruthResult.fail("Could not parse price data")
-
-            # Current price is the last close
-            current = self._parse_float(rows[-1].get("Close"))
-            if current is None:
-                return GroundTruthResult.fail("Could not parse current price")
-
-            return GroundTruthResult.ok({
-                "current_price": current,
-                "high_52w": max(highs),
-                "low_52w": min(lows),
-            })
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching {symbol}: {e}")
+        return GroundTruthResult.fail(
+            f"52-week queries for '{symbol}' require historical data spanning 252 trading days. "
+            "This data is not available in collected cache. "
+            "52-week templates are only supported in live mode."
+        )
 
     def _parse_float(self, value: Any) -> Optional[float]:
         if value is None:

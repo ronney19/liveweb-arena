@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Callable, List, Optional, Tuple
 
 from .browser import BrowserSession
+from .cache import CacheFatalError
 from .models import BrowserAction, CompositeTask, TrajectoryStep
 from .agent_policy import AgentPolicy
 from ..utils.llm_client import LLMClient, LLMFatalError
@@ -28,6 +29,8 @@ class BrowserFatalError(Exception):
 NavigationCallback = Callable[[str], Any]
 # Type for step complete callback: async (step: TrajectoryStep) -> None
 StepCompleteCallback = Callable[["TrajectoryStep"], Any]
+# Type for observation callback: async (observation: BrowserObservation) -> None
+ObservationCallback = Callable[[Any], Any]
 
 # URL patterns that indicate browser/network errors (not AI's fault)
 # Note: about:blank is NOT an error - it's the initial page where AI starts
@@ -63,6 +66,7 @@ class AgentLoop:
         max_steps: int = 30,
         on_navigation: Optional[NavigationCallback] = None,
         on_step_complete: Optional[StepCompleteCallback] = None,
+        on_observation: Optional[ObservationCallback] = None,
     ):
         self._session = session
         self._llm_client = llm_client
@@ -70,6 +74,7 @@ class AgentLoop:
         self._max_steps = max_steps
         self._on_navigation = on_navigation
         self._on_step_complete = on_step_complete
+        self._on_observation = on_observation
 
         # Internal state for partial recovery
         self._trajectory: List[TrajectoryStep] = []
@@ -162,6 +167,8 @@ class AgentLoop:
                     if self._on_navigation and obs.url != old_url and not is_error_page(obs.url):
                         try:
                             await self._on_navigation(obs.url)
+                        except CacheFatalError:
+                            raise  # Cache failure = browser can't load = terminate immediately
                         except Exception as e:
                             log("Agent", f"Navigation callback error: {e}")
                 else:
@@ -173,6 +180,13 @@ class AgentLoop:
             consecutive_error_pages = 0
             effective_step += 1
             log("Agent", f"Step {effective_step}/{self._max_steps}, url={obs.url[:50]}")
+
+            # Fire observation callback for real-time GT collection (before action)
+            if self._on_observation:
+                try:
+                    await self._on_observation(obs)
+                except Exception as e:
+                    log("Agent", f"Observation callback error: {e}")
 
             # Pre-save observation so it's not lost if LLM call times out
             current_obs = obs
@@ -260,6 +274,8 @@ class AgentLoop:
                     if self._on_navigation and obs.url != old_url:
                         try:
                             await self._on_navigation(obs.url)
+                        except CacheFatalError:
+                            raise  # Cache failure = browser can't load = terminate immediately
                         except Exception as e:
                             log("Agent", f"Navigation callback error: {e}")
                 except Exception as e:
@@ -274,7 +290,7 @@ class AgentLoop:
             )
             self._trajectory.append(step)
 
-            # Fire step complete callback for real-time GT collection
+            # Fire step complete callback (after action executed)
             if self._on_step_complete:
                 try:
                     await self._on_step_complete(step)

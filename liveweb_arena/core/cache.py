@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 if TYPE_CHECKING:
     from liveweb_arena.plugins.base import BasePlugin
@@ -35,6 +35,19 @@ logger = logging.getLogger(__name__)
 
 # Default TTL: 24 hours
 DEFAULT_TTL = 24 * 3600
+
+
+class CacheFatalError(Exception):
+    """
+    Raised when page caching fails due to network issues.
+
+    This indicates the browser cannot load the page, making evaluation invalid.
+    Evaluation should be terminated immediately.
+    """
+
+    def __init__(self, message: str, url: str = None):
+        super().__init__(message)
+        self.url = url
 
 
 def log(tag: str, message: str):
@@ -49,17 +62,29 @@ class CachedPage:
     html: str
     api_data: Optional[Dict[str, Any]]
     fetched_at: float
+    accessibility_tree: Optional[str] = None  # Cached for deterministic evaluation
+    need_api: bool = True  # Whether this page requires API data (default True for safety)
 
     def is_expired(self, ttl: int) -> bool:
         return time.time() > self.fetched_at + ttl
 
+    def is_complete(self) -> bool:
+        """Check if cache is complete (has API data if needed)."""
+        if self.need_api:
+            return self.api_data is not None and len(self.api_data) > 0
+        return True
+
     def to_dict(self) -> dict:
-        return {
+        result = {
             "url": self.url,
             "html": self.html,
             "api_data": self.api_data,
             "fetched_at": self.fetched_at,
+            "need_api": self.need_api,
         }
+        if self.accessibility_tree:
+            result["accessibility_tree"] = self.accessibility_tree
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "CachedPage":
@@ -68,6 +93,8 @@ class CachedPage:
             html=data["html"],
             api_data=data.get("api_data"),
             fetched_at=data["fetched_at"],
+            accessibility_tree=data.get("accessibility_tree"),
+            need_api=data.get("need_api", True),  # Default True for old caches
         )
 
 
@@ -123,6 +150,7 @@ def normalize_url(url: str) -> str:
     3. Remove tracking parameters
     4. Sort remaining query parameters
     5. Lowercase query parameter values (for case-insensitive matching)
+    6. Normalize URL encoding (decode %XX, normalize + to space)
     """
     parsed = urlparse(url)
 
@@ -133,8 +161,8 @@ def normalize_url(url: str) -> str:
     if domain.endswith(':80') or domain.endswith(':443'):
         domain = domain.rsplit(':', 1)[0]
 
-    # Path (preserve case for path components)
-    path = parsed.path or '/'
+    # Path: decode percent-encoding, normalize spaces to +
+    path = unquote(parsed.path or '/').replace(' ', '+')
 
     # Filter, sort, and lowercase query parameters
     if parsed.query:
@@ -176,8 +204,8 @@ def url_to_cache_dir(cache_dir: Path, url: str) -> Path:
     if domain.endswith(':80') or domain.endswith(':443'):
         domain = domain.rsplit(':', 1)[0]
 
-    # Path parts
-    path = parsed.path.strip('/')
+    # Path parts - decode percent-encoding, normalize spaces to +
+    path = unquote(parsed.path).replace(' ', '+').strip('/')
     if path:
         path_parts = [safe_path_component(p) for p in path.split('/')]
     else:
@@ -269,26 +297,43 @@ class CacheManager:
                 log("Cache", f"HIT {page_type} (after lock) - {url_display(normalized)}")
                 return cached
 
-            # 4. Actually fetch
+            # 4. Actually fetch - both page and API must succeed
             log("Cache", f"MISS {page_type} - fetching {url_display(normalized)}")
             start = time.time()
 
-            # Fetch page HTML
-            html = await self._fetch_page(url)
+            # Fetch page HTML and accessibility tree - must succeed
+            try:
+                html, accessibility_tree = await self._fetch_page(url)
+            except Exception as e:
+                raise CacheFatalError(
+                    f"Page fetch failed (browser cannot load): {e}",
+                    url=url,
+                )
 
-            # Only fetch API data for data pages
+            # Fetch API data for data pages - must succeed if required
             api_data = None
             if need_api:
                 try:
                     api_data = await plugin.fetch_api_data(url)
                 except Exception as e:
-                    logger.warning(f"Failed to fetch API data for {url}: {e}")
+                    raise CacheFatalError(
+                        f"API data fetch failed (GT will be invalid): {e}",
+                        url=url,
+                    )
+                # API data must not be empty
+                if not api_data:
+                    raise CacheFatalError(
+                        f"API data is empty (GT will be invalid)",
+                        url=url,
+                    )
 
             cached = CachedPage(
                 url=url,
                 html=html,
                 api_data=api_data,
                 fetched_at=time.time(),
+                accessibility_tree=accessibility_tree,
+                need_api=need_api,
             )
 
             self._save(cache_file, cached)
@@ -305,17 +350,31 @@ class CacheManager:
             cached = self._load(cache_file)
         except Exception as e:
             logger.warning(f"Failed to load cache {cache_file}: {e}")
+            # Corrupted cache - delete it
+            self._delete_cache(cache_file)
             return None
 
         if cached.is_expired(self.ttl):
+            # Expired cache - delete it
+            self._delete_cache(cache_file)
             return None
 
-        # If need API data but cache doesn't have it, treat as invalid
-        # Empty dict {} is also invalid - must have actual data
-        if need_api and not cached.api_data:
+        # Check if cache is complete based on its own need_api flag
+        # Also handle case where current request needs API but old cache doesn't have it
+        if not cached.is_complete() or (need_api and not cached.api_data):
+            log("Cache", f"Incomplete (missing API) - deleting {url_display(cached.url)}")
+            self._delete_cache(cache_file)
             return None
 
         return cached
+
+    def _delete_cache(self, cache_file: Path):
+        """Delete cache file."""
+        try:
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to delete cache {cache_file}: {e}")
 
     def _load(self, cache_file: Path) -> CachedPage:
         """Load cache from file."""
@@ -329,8 +388,13 @@ class CacheManager:
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(cached.to_dict(), f, ensure_ascii=False)
 
-    async def _fetch_page(self, url: str) -> str:
-        """Fetch page HTML using Playwright."""
+    async def _fetch_page(self, url: str) -> tuple:
+        """
+        Fetch page HTML and accessibility tree using Playwright.
+
+        Returns:
+            (html, accessibility_tree) tuple
+        """
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
@@ -363,11 +427,66 @@ class CacheManager:
 
                 html = await page.content()
 
+                # Extract accessibility tree for deterministic caching
+                a11y_tree = ""
+                try:
+                    a11y_snapshot = await page.accessibility.snapshot()
+                    if a11y_snapshot:
+                        a11y_tree = self._format_accessibility_tree(a11y_snapshot)
+                except Exception:
+                    pass
+
+                # If accessibility tree is empty, get page text content
+                if len(a11y_tree.strip()) < 100:
+                    try:
+                        page_text = await page.evaluate("""
+                            () => {
+                                const preElements = document.querySelectorAll('pre');
+                                if (preElements.length > 0) {
+                                    return Array.from(preElements).map(el => el.innerText).join('\\n');
+                                }
+                                return document.body.innerText || '';
+                            }
+                        """)
+                        if page_text.strip():
+                            if a11y_tree.strip():
+                                a11y_tree += "\n\n--- Page Text Content ---\n" + page_text
+                            else:
+                                a11y_tree = page_text
+                    except Exception:
+                        pass
+
                 await context.close()
-                return html
+                return html, a11y_tree
 
             finally:
                 await browser.close()
+
+    def _format_accessibility_tree(self, node: dict, indent: int = 0) -> str:
+        """Format accessibility tree node recursively."""
+        if not node:
+            return ""
+
+        lines = []
+        prefix = "\t" * indent
+
+        role = node.get("role", "")
+        name = node.get("name", "")
+        value = node.get("value", "")
+
+        parts = [role]
+        if name:
+            parts.append(f'"{name}"')
+        if value:
+            parts.append(f'value="{value}"')
+
+        lines.append(f"{prefix}{' '.join(parts)}")
+
+        children = node.get("children", [])
+        for child in children:
+            lines.append(self._format_accessibility_tree(child, indent + 1))
+
+        return "\n".join(lines)
 
     def get_cached(self, url: str) -> Optional[CachedPage]:
         """Get cached page without triggering update."""

@@ -9,7 +9,6 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
-from liveweb_arena.plugins.coingecko.api_client import CoinGeckoClient
 
 
 @register_template("taostats_price")
@@ -63,16 +62,31 @@ class PriceTemplate(QuestionTemplate):
 - Score 0.0: No price, wrong currency, or more than 5% off"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch TAO price from CoinGecko API"""
-        try:
-            data = await CoinGeckoClient.get_simple_price("bittensor", "usd")
-            if data:
-                price = data.get("bittensor", {}).get("usd")
-                if price is not None:
-                    return GroundTruthResult.ok(price)
-            return GroundTruthResult.retry("No price data from CoinGecko")
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        """Fetch TAO price from collected API data (no network fallback)."""
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
+
+        collected = gt_collector.get_collected_api_data()
+
+        # TAO data might be stored under "bittensor" (CoinGecko coin_id)
+        if "bittensor" in collected:
+            coin_data = collected["bittensor"]
+            price = coin_data.get("current_price")
+            if price is not None:
+                return GroundTruthResult.ok(price)
+
+        # Or check taostats data
+        taostats_data = collected.get("taostats", {})
+        if "tao_price" in taostats_data:
+            return GroundTruthResult.ok(taostats_data["tao_price"])
+
+        return GroundTruthResult.fail(
+            f"TAO price not found in collected data. "
+            f"Available keys: {list(collected.keys())[:10]}"
+        )
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]

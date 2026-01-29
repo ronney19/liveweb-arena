@@ -10,12 +10,12 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
+from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
 
 
 class NetworkMetric(Enum):
     """Network-level metrics"""
     SUBNET_COUNT = "subnet_count"
-    CURRENT_BLOCK = "current_block"
 
 
 @register_template("taostats_network")
@@ -23,8 +23,10 @@ class NetworkTemplate(QuestionTemplate):
     """
     Template for network-level queries on Taostats.
 
-    Ground truth is fetched from Bittensor SDK.
+    Uses taostats API data for ground truth.
     """
+
+    GT_SOURCE = GTSourceType.HYBRID
 
     PATTERNS: Dict[NetworkMetric, List[str]] = {
         NetworkMetric.SUBNET_COUNT: [
@@ -36,36 +38,16 @@ class NetworkTemplate(QuestionTemplate):
             "What's the total subnet count shown on taostats.io?",
             "Count the number of registered subnets on the Bittensor network.",
         ],
-        NetworkMetric.CURRENT_BLOCK: [
-            "What is the current block number on Bittensor? Check taostats.io.",
-            "Go to taostats.io and find the latest block number.",
-            "What's the current block height on the Bittensor network?",
-            "Find the latest finalized block number on taostats.io.",
-            "What block is Bittensor currently at? Check taostats.io.",
-            "Look up the current chain height on taostats.io.",
-        ],
     }
 
     def __init__(self):
         super().__init__("taostats_network")
 
     def generate(self, seed: int, variant: Optional[int] = None) -> GeneratedQuestion:
-        """
-        Generate a Taostats network question.
-
-        Args:
-            seed: Random seed for reproducible generation
-            variant: Optional variant index for selecting network metric.
-                     0=SUBNET_COUNT, 1=CURRENT_BLOCK
-        """
         rng = random.Random(seed)
 
-        # Select metric (use variant if provided)
-        metrics_list = list(NetworkMetric)
-        if variant is not None:
-            metric = metrics_list[variant % len(metrics_list)]
-        else:
-            metric = rng.choice(metrics_list)
+        # Only subnet_count is supported (current_block requires different API)
+        metric = NetworkMetric.SUBNET_COUNT
         patterns = self.PATTERNS[metric]
         question_text = rng.choice(patterns)
 
@@ -75,56 +57,47 @@ class NetworkTemplate(QuestionTemplate):
 
         return GeneratedQuestion(
             question_text=question_text,
-            start_url="https://taostats.io/subnets" if metric == NetworkMetric.SUBNET_COUNT else "https://taostats.io",
+            start_url="https://taostats.io/subnets",
             variables={"metric": metric},
             validation_info=validation_info,
             template_name=self.name,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
-        metric = validation_info.get("metric", "")
-
-        if metric == "subnet_count":
-            return """Task-Specific Rules (Subnet Count):
+        return """Task-Specific Rules (Subnet Count):
 - Score 1.0: Agent provides subnet count within 5% tolerance
 - Score 0.0: Count differs by more than 5% or no number"""
 
-        if metric == "current_block":
-            return """Task-Specific Rules (Current Block):
-- Score 1.0: Agent provides block number close to current (within 200 blocks)
-- Score 0.0: No number or wrong block"""
-
-        return ""
-
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch ground truth from Bittensor SDK"""
-        try:
-            import bittensor as bt
+        """Fetch ground truth from collected API data (no network fallback)."""
+        metric = validation_info.get("metric", "")
 
-            subtensor = bt.Subtensor(network="finney")
-            metric = validation_info.get("metric", "")
+        if metric == "subnet_count":
+            # Get collected API data
+            gt_collector = get_current_gt_collector()
+            if gt_collector is None:
+                return GroundTruthResult.fail("No GT collector")
 
-            if metric == "subnet_count":
-                netuids = subtensor.get_all_subnets_netuid()
-                return GroundTruthResult.ok(len(netuids))
+            collected = gt_collector.get_collected_api_data()
+            taostats_data = collected.get("taostats", {})
+            subnets_data = taostats_data.get("subnets", {})
 
-            elif metric == "current_block":
-                block = subtensor.get_current_block()
-                return GroundTruthResult.ok(block)
+            if not subnets_data:
+                return GroundTruthResult.fail(
+                    f"Taostats subnets data not collected. "
+                    f"Available keys: {list(collected.keys())[:10]}"
+                )
 
-            return GroundTruthResult.fail(f"Unknown metric: {metric}")
+            return GroundTruthResult.ok(len(subnets_data))
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"Bittensor SDK error: {e}")
+        return GroundTruthResult.fail(f"Unknown metric: {metric}")
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
-        """Validate answer against ground truth"""
         import re
 
         result = await self.get_ground_truth(validation_info)
-        metric = validation_info.get("metric", "")
 
         if not result.success:
             return ValidationResult(
@@ -136,7 +109,6 @@ class NetworkTemplate(QuestionTemplate):
             )
 
         ground_truth = result.value
-        # Extract number from answer
         numbers = re.findall(r'[\d,]+', answer.replace(',', ''))
         if not numbers:
             return ValidationResult(
@@ -147,7 +119,6 @@ class NetworkTemplate(QuestionTemplate):
                 details="No number found in answer",
             )
 
-        # Get the first reasonable number
         agent_number = None
         for n in numbers:
             try:
@@ -167,16 +138,9 @@ class NetworkTemplate(QuestionTemplate):
                 details="No valid number found",
             )
 
-        # Binary scoring
         diff = abs(agent_number - ground_truth)
-        if metric == "subnet_count":
-            # Allow ±5% or ±5 subnets tolerance (webpage vs SDK may differ)
-            tolerance = max(5, int(ground_truth * 0.05))
-            score = 1.0 if diff <= tolerance else 0.0
-        elif metric == "current_block":
-            score = 1.0 if diff <= 200 else 0.0  # Block number can vary slightly
-        else:
-            score = 0.0
+        tolerance = max(5, int(ground_truth * 0.05))
+        score = 1.0 if diff <= tolerance else 0.0
 
         return ValidationResult(
             score=score,
@@ -187,32 +151,12 @@ class NetworkTemplate(QuestionTemplate):
         )
 
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
-        """Taostats network: trigger when AI visits taostats.io."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.FIRST)
 
     @classmethod
     def get_cache_source(cls) -> str:
-        """Return the cache source name for this template."""
         return "taostats"
 
     def get_gt_source(self):
-        """
-        Taostats network template uses HYBRID extraction.
-
-        - subnet_count: extractable from page (list of subnets)
-        - current_block: may need API/SDK for precise value
-
-        Page extraction is preferred when available, API supplements
-        for complex queries.
-        """
-        from liveweb_arena.core.gt_collector import GTSourceType
-        return GTSourceType.HYBRID
-
-    def get_page_fields(self):
-        """Fields extractable from Taostats page."""
-        return ["subnet_count", "current_block"]
-
-    def get_api_fields(self):
-        """Fields that may require API/SDK."""
-        return ["current_block"]
+        return self.GT_SOURCE

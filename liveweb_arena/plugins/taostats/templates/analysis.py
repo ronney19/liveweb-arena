@@ -10,23 +10,26 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
-from liveweb_arena.core.gt_collector import GTSourceType
-from .variables import _fetch_active_subnet_ids, _fetch_subnet_name
+from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
+from .variables import _fetch_top_subnet_ids, _fetch_subnet_name
 
 
 class AnalysisType(Enum):
     """Types of analysis questions - only metrics visible on taostats.io"""
     HIGHEST_PRICE_TO_STAKE = "highest_price_to_stake"
     LOWEST_PRICE_TO_STAKE = "lowest_price_to_stake"
-    # Note: HIGHEST_STAKE_EFFICIENCY removed - alpha_out not shown on website
     HIGHEST_TAO_IN = "highest_tao_in"
     HIGHEST_PRICE = "highest_price"
     LOWEST_PRICE = "lowest_price"
 
 
 def _get_subnet_list(rng: random.Random, count: int) -> List[Tuple[int, str]]:
-    """Dynamically fetch subnet IDs and names for analysis."""
-    subnet_ids = _fetch_active_subnet_ids()
+    """Dynamically fetch subnet IDs and names for analysis.
+
+    Uses top 10 subnets by emission to ensure visibility on first page
+    (taostats.io defaults to 10 rows sorted by emission).
+    """
+    subnet_ids = _fetch_top_subnet_ids(top_n=10)
     if len(subnet_ids) < count:
         count = len(subnet_ids)
 
@@ -39,15 +42,10 @@ class AnalysisTemplate(QuestionTemplate):
     """
     Template for analysis questions requiring calculation.
 
-    Tests AI's ability to:
-    1. Navigate and find multiple data points
-    2. Perform calculations or comparisons
-    3. Draw conclusions from derived metrics
-
-    Ground truth is calculated from Bittensor SDK data.
+    Uses taostats API data for ground truth (bound to page cache).
     """
 
-    GT_SOURCE = GTSourceType.API_ONLY
+    GT_SOURCE = GTSourceType.HYBRID
 
     PATTERNS: Dict[AnalysisType, List[str]] = {
         AnalysisType.HIGHEST_PRICE_TO_STAKE: [
@@ -81,25 +79,15 @@ class AnalysisTemplate(QuestionTemplate):
         super().__init__("taostats_analysis")
 
     def generate(self, seed: int, variant: Optional[int] = None) -> GeneratedQuestion:
-        """
-        Generate a Taostats analysis question.
-
-        Args:
-            seed: Random seed for reproducible generation
-            variant: Optional variant index for selecting analysis type.
-                     0=HIGHEST_PRICE_TO_STAKE, 1=LOWEST_PRICE_TO_STAKE,
-                     2=HIGHEST_TAO_IN, 3=HIGHEST_PRICE, 4=LOWEST_PRICE
-        """
         rng = random.Random(seed)
 
-        # Dynamically select 3-5 subnets for comparison
+        # Dynamically select 3-5 subnets from top subnets (visible on first page)
         num_subnets = rng.randint(3, 5)
         selected = _get_subnet_list(rng, num_subnets)
         if len(selected) < 2:
-            # Fallback if network fetch fails
-            selected = [(1, "Subnet 1"), (2, "Subnet 2"), (3, "Subnet 3")]
+            raise RuntimeError("Could not fetch subnet data for analysis question generation")
 
-        # Select analysis type (use variant if provided)
+        # Select analysis type
         analysis_types_list = list(AnalysisType)
         if variant is not None:
             analysis_type = analysis_types_list[variant % len(analysis_types_list)]
@@ -108,7 +96,6 @@ class AnalysisTemplate(QuestionTemplate):
         patterns = self.PATTERNS[analysis_type]
         pattern = rng.choice(patterns)
 
-        # Format subnet list
         subnet_names = ", ".join([name for _, name in selected])
         question_text = pattern.format(subnets=subnet_names)
 
@@ -145,72 +132,78 @@ class AnalysisTemplate(QuestionTemplate):
 - Score 0.0: Wrong subnet or no clear answer"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """
-        Calculate ground truth by fetching subnet data and computing derived metrics.
+        """Calculate ground truth from collected API data (no network fallback)."""
+        analysis_type = validation_info.get("analysis_type", "")
+        subnet_ids = validation_info.get("subnet_ids", [])
+        subnet_names = validation_info.get("subnet_names", [])
 
-        Returns:
-            GroundTruthResult with the name of the winning subnet
-        """
-        try:
-            import bittensor as bt
+        if not subnet_ids or len(subnet_ids) != len(subnet_names):
+            return GroundTruthResult.fail("Invalid subnet IDs or names")
 
-            subtensor = bt.Subtensor(network="finney")
-            analysis_type = validation_info.get("analysis_type", "")
-            subnet_ids = validation_info.get("subnet_ids", [])
-            subnet_names = validation_info.get("subnet_names", [])
+        # Get collected API data
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            if not subnet_ids or len(subnet_ids) != len(subnet_names):
-                return GroundTruthResult.fail("Invalid subnet IDs or names")
+        collected = gt_collector.get_collected_api_data()
+        taostats_data = collected.get("taostats", {})
+        subnets_data = taostats_data.get("subnets", {})
 
-            # Fetch data for each subnet
-            subnet_data = []
-            for i, netuid in enumerate(subnet_ids):
-                try:
-                    info = subtensor.subnet(netuid)
-                    if info is None:
-                        continue
+        if not subnets_data:
+            return GroundTruthResult.fail(
+                f"Taostats subnets data not collected. "
+                f"Available keys: {list(collected.keys())[:10]}"
+            )
 
-                    price = float(info.price.tao) if info.price else 0
-                    tao_in = float(info.tao_in.tao) if info.tao_in else 0
-                    price_to_stake = price / tao_in if tao_in > 0 else 0
+        # Build subnet data list
+        subnet_list = []
+        missing = []
+        for i, netuid in enumerate(subnet_ids):
+            data = subnets_data.get(str(netuid), {})
+            if not data:
+                missing.append(f"SN{netuid} ({subnet_names[i]})")
+                continue
 
-                    subnet_data.append({
-                        "netuid": netuid,
-                        "name": subnet_names[i],
-                        "price": price,
-                        "tao_in": tao_in,
-                        "price_to_stake": price_to_stake,
-                    })
-                except Exception:
-                    continue
+            price = float(data.get("price", 0) or 0)
+            tao_in = float(data.get("tao_in", 0) or 0)
+            price_to_stake = price / tao_in if tao_in > 0 else 0
 
-            if len(subnet_data) < 2:
-                return GroundTruthResult.retry("Could not fetch enough subnet data")
+            subnet_list.append({
+                "netuid": netuid,
+                "name": subnet_names[i],
+                "price": price,
+                "tao_in": tao_in,
+                "price_to_stake": price_to_stake,
+            })
 
-            # Sort by the relevant metric
-            sort_config = {
-                "highest_price_to_stake": ("price_to_stake", True),
-                "lowest_price_to_stake": ("price_to_stake", False),
-                "highest_tao_in": ("tao_in", True),
-                "highest_price": ("price", True),
-                "lowest_price": ("price", False),
-            }
+        if missing:
+            return GroundTruthResult.fail(
+                f"Subnets not found in collected data: {', '.join(missing)}"
+            )
 
-            if analysis_type not in sort_config:
-                return GroundTruthResult.fail(f"Unknown analysis type: {analysis_type}")
+        if len(subnet_list) < 2:
+            return GroundTruthResult.fail("Not enough subnet data for analysis")
 
-            sort_key, reverse = sort_config[analysis_type]
-            subnet_data.sort(key=lambda x: x[sort_key], reverse=reverse)
+        # Sort by the relevant metric
+        sort_config = {
+            "highest_price_to_stake": ("price_to_stake", True),
+            "lowest_price_to_stake": ("price_to_stake", False),
+            "highest_tao_in": ("tao_in", True),
+            "highest_price": ("price", True),
+            "lowest_price": ("price", False),
+        }
 
-            return GroundTruthResult.ok(subnet_data[0]["name"])
+        if analysis_type not in sort_config:
+            return GroundTruthResult.fail(f"Unknown analysis type: {analysis_type}")
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"Bittensor SDK error: {e}")
+        sort_key, reverse = sort_config[analysis_type]
+        subnet_list.sort(key=lambda x: x[sort_key], reverse=reverse)
+
+        return GroundTruthResult.ok(subnet_list[0]["name"])
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
-        """Validate analysis answer"""
         result = await self.get_ground_truth(validation_info)
 
         if not result.success:
@@ -225,7 +218,6 @@ class AnalysisTemplate(QuestionTemplate):
         top_name = result.value
         answer_lower = answer.lower()
 
-        # Binary scoring: correct subnet or wrong
         if top_name.lower() in answer_lower:
             return ValidationResult(
                 score=1.0,
@@ -244,11 +236,12 @@ class AnalysisTemplate(QuestionTemplate):
         )
 
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
-        """Analysis: LAST for multi-page analysis."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)
 
     @classmethod
     def get_cache_source(cls) -> str:
-        """Return the cache source name for this template."""
         return "taostats"
+
+    def get_gt_source(self) -> GTSourceType:
+        return self.GT_SOURCE

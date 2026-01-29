@@ -12,7 +12,6 @@ from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
 )
 from liveweb_arena.core.gt_collector import GTSourceType
-from liveweb_arena.plugins.stooq.api_client import StooqClient
 from .variables import (
     StockVariable, IndexVariable, US_STOCKS, INDICES,
     StockSpec, IndexSpec, InstrumentType,
@@ -158,7 +157,10 @@ class StooqHistoricalTemplate(QuestionTemplate):
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
         """
-        Calculate ground truth from historical CSV data.
+        Calculate ground truth from collected API data.
+
+        Note: Historical queries require multi-day data which is not available in the standard
+        collected cache that only stores current day data. This template only works in live mode.
         """
         symbol = validation_info.get("symbol", "")
         query_type = validation_info.get("query_type", "highest_close")
@@ -167,36 +169,12 @@ class StooqHistoricalTemplate(QuestionTemplate):
         if not symbol:
             return GroundTruthResult.fail("No symbol provided")
 
-        try:
-            # Use historical data via StooqClient
-            rows = await StooqClient.get_historical_data(symbol)
-
-            if not rows or len(rows) < num_days:
-                return GroundTruthResult.retry(f"Insufficient data: need {num_days} days")
-
-            recent_data = rows[-num_days:]
-            closes = []
-            for row in recent_data:
-                close = self._parse_float(row.get("Close"))
-                if close is not None:
-                    closes.append(close)
-
-            if not closes:
-                return GroundTruthResult.fail("Could not parse closing prices")
-
-            if query_type == "highest_close":
-                return GroundTruthResult.ok(max(closes))
-            elif query_type == "lowest_close":
-                return GroundTruthResult.ok(min(closes))
-            elif query_type == "average_close":
-                return GroundTruthResult.ok(sum(closes) / len(closes))
-            elif query_type == "price_range":
-                return GroundTruthResult.ok(max(closes) - min(closes))
-            else:
-                return GroundTruthResult.fail(f"Unknown query type: {query_type}")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching {symbol}: {e}")
+        return GroundTruthResult.fail(
+            f"Historical query '{query_type}' for '{symbol}' over {num_days} days "
+            "requires multi-day historical data. "
+            "This data is not available in collected cache which only stores current day data. "
+            "Historical templates are only supported in live mode."
+        )
 
     def _parse_float(self, value: Any) -> Optional[float]:
         if value is None:

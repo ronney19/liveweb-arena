@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
-from ..api_client import WeatherClient
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
@@ -191,42 +190,53 @@ class AstronomyTemplate(QuestionTemplate):
   Full Moon, Waning Gibbous, Last Quarter, Waning Crescent"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch astronomy data from wttr.in API"""
+        """Get astronomy data from collected API data (no network fallback)."""
         location = validation_info["location"]
         target_date = validation_info["target_date"]
         api_field = validation_info["api_field"]
 
-        try:
-            data = await WeatherClient.get_weather_data(location)
-            if data is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {location}")
-
-            weather = data.get("weather", [])
-
-            # Find day by date
-            day_data = None
-            for day in weather:
-                if day.get("date") == target_date:
-                    day_data = day
+        # Get data from collected API data only
+        data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            city_name = location.split(",")[0].strip() if "," in location else location
+            variants = [
+                location, city_name,
+                city_name.replace('+', ' '), location.replace('+', ' '),
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    data = collected[loc_key]
                     break
 
-            if day_data is None:
-                return GroundTruthResult.fail(f"No data for date: {target_date}")
+        if data is None:
+            return GroundTruthResult.fail(f"Weather data for '{location}' not collected")
 
-            astronomy = day_data.get("astronomy", [])
-            if not astronomy:
-                return GroundTruthResult.fail("No astronomy data available")
+        weather = data.get("weather", [])
 
-            astro_data = astronomy[0]
-            value = astro_data.get(api_field)
+        # Find day by date
+        day_data = None
+        for day in weather:
+            if day.get("date") == target_date:
+                day_data = day
+                break
 
-            if value is None:
-                return GroundTruthResult.fail(f"Missing {api_field} data")
+        if day_data is None:
+            return GroundTruthResult.fail(f"No data for date: {target_date}")
 
-            return GroundTruthResult.ok(value)
+        astronomy = day_data.get("astronomy", [])
+        if not astronomy:
+            return GroundTruthResult.fail("No astronomy data available")
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        astro_data = astronomy[0]
+        value = astro_data.get(api_field)
+
+        if value is None:
+            return GroundTruthResult.fail(f"Missing {api_field} data")
+
+        return GroundTruthResult.ok(value)
 
     async def validate_answer(
         self,

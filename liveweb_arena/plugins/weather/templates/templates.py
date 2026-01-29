@@ -4,7 +4,6 @@ import random
 from typing import Any, Dict, List, Optional
 
 from liveweb_arena.core.validators.base import QuestionTemplate, GeneratedQuestion, ValidationResult, register_template
-from ..api_client import WeatherClient
 from liveweb_arena.core.validators.validators import NumericToleranceValidator, BooleanValidator, ExactMatchValidator
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
@@ -252,19 +251,46 @@ class LocationNameWeatherTemplate(QuestionTemplate):
         )
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch ground truth from wttr.in API"""
+        """Fetch ground truth from collected API data or wttr.in API"""
         location = validation_info["location"]
         target_date = validation_info["target_date"]  # YYYY-MM-DD format or "now"
         api_field = validation_info["api_field"]
         is_boolean = validation_info.get("is_boolean", False)
         unit = validation_info.get("unit", "")
 
-        try:
-            data = await WeatherClient.get_weather_data(location)
-            if data is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {location}")
-        except Exception as e:
-            return GroundTruthResult.fail(f"Unexpected error: {e}")
+        # First try collected API data from page visits
+        data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            # Try multiple location variants:
+            # api_query is "Hong+Kong,China" format, but stored key may be "Hong Kong" (space)
+            # from URL path decoding (wttr.in/Hong%20Kong -> "Hong Kong")
+            city_name = location.split(",")[0].strip() if "," in location else location
+            variants = [
+                location,                          # Full: "Hong+Kong,China"
+                city_name,                         # City: "Hong+Kong"
+                city_name.replace('+', ' '),       # Space format: "Hong Kong" (from URL decode)
+                location.replace('+', ' '),        # Full with space: "Hong Kong, China"
+                location.replace(' ', ''),         # NoSpace: "HongKong,China"
+                city_name.replace(' ', ''),        # NoSpace city: "HongKong"
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    data = collected[loc_key]
+                    break
+
+        # NO FALLBACK - GT must come from collected API data only
+        # If agent didn't visit the right page, GT is unavailable
+        if data is None:
+            # Debug: show what keys are in collected
+            collected_keys = list(collected.keys()) if gt_collector else []
+            return GroundTruthResult.fail(
+                f"Weather data for '{location}' not collected. "
+                f"Agent must visit the weather page. "
+                f"Collected keys: {collected_keys[:5]}, tried variants: {variants}"
+            )
 
         value = None
 
@@ -409,23 +435,22 @@ class LocationNameWeatherTemplate(QuestionTemplate):
         Generate URLs to cache based on LocationVariable.
 
         Each location has multiple formats:
-        - https://wttr.in/{query} - HTML page
-        - https://wttr.in/{query}?format=j1 - JSON API (used by agent)
-        - https://v2.wttr.in/{query} - Enhanced HTML page
+        - https://wttr.in/{query} - HTML page (ASCII art, parseable)
+        - https://wttr.in/{query}?format=j1 - JSON API (blocked, forces web browsing)
+
+        Note: v2.wttr.in is NOT supported (uses images instead of ASCII art)
         """
         urls = []
-        # Add all city locations (HTML, JSON API, and v2 formats)
+        # Add all city locations (HTML and JSON API formats)
         for region, cities in LocationVariable.CITY_SEEDS.items():
             for city, country in cities:
                 query = f"{city},{country}".replace(" ", "+")
                 urls.append(f"https://wttr.in/{query}")
                 urls.append(f"https://wttr.in/{query}?format=j1")
-                urls.append(f"https://v2.wttr.in/{query}")
         # Add airport codes
         for code in LocationVariable.AIRPORT_CODES:
             urls.append(f"https://wttr.in/{code.lower()}")
             urls.append(f"https://wttr.in/{code.lower()}?format=j1")
-            urls.append(f"https://v2.wttr.in/{code.lower()}")
         return urls
 
 
@@ -572,17 +597,29 @@ class CurrentWeatherTemplate(QuestionTemplate):
 - Score 0.0: Values differ significantly"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch current conditions from wttr.in API"""
+        """Get current conditions from collected API data (no network fallback)"""
         location = validation_info["location"]
         api_field = validation_info["api_field"]
         unit = validation_info.get("unit", "")
 
-        try:
-            data = await WeatherClient.get_weather_data(location)
-            if data is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {location}")
-        except Exception as e:
-            return GroundTruthResult.fail(f"Unexpected error: {e}")
+        # Get data from collected API data only
+        data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            city_name = location.split(",")[0].strip() if "," in location else location
+            variants = [
+                location, city_name,
+                city_name.replace('+', ' '), location.replace('+', ' '),
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    data = collected[loc_key]
+                    break
+
+        if data is None:
+            return GroundTruthResult.fail(f"Weather data for '{location}' not collected")
 
         current = data.get("current_condition", [{}])[0]
         value = current.get(api_field)
@@ -826,19 +863,31 @@ class MultiDayWeatherTemplate(QuestionTemplate):
 - Compare each day's value independently"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """Fetch ground truth for multi-day query"""
+        """Get ground truth for multi-day query from collected API data (no network fallback)"""
         location = validation_info["location"]
         num_days = validation_info["num_days"]
         api_field = validation_info["api_field"]
         is_boolean = validation_info.get("is_boolean", False)
         question_type = validation_info.get("question_type")
 
-        try:
-            data = await WeatherClient.get_weather_data(location)
-            if data is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {location}")
-        except Exception as e:
-            return GroundTruthResult.fail(f"Unexpected error: {e}")
+        # Get data from collected API data only
+        data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            city_name = location.split(",")[0].strip() if "," in location else location
+            variants = [
+                location, city_name,
+                city_name.replace('+', ' '), location.replace('+', ' '),
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    data = collected[loc_key]
+                    break
+
+        if data is None:
+            return GroundTruthResult.fail(f"Weather data for '{location}' not collected")
 
         weather = data.get("weather", [])
 

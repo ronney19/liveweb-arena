@@ -107,16 +107,36 @@ class BrowserSession:
         """
         Block URLs matching the given patterns.
 
-        Uses Playwright's route interception to abort requests to blocked URLs.
-        This forces agents to use actual websites instead of APIs.
+        Uses regex-based route interception to properly handle special characters.
+        Playwright's glob pattern treats ? as single-char wildcard, but we need
+        literal ? for URLs like *?format=*.
 
         Args:
-            patterns: List of URL patterns (supports * wildcard)
-                     Example: ["*api.example.com*"]
+            patterns: List of URL patterns (glob-style with * wildcard)
+                     Example: ["*api.example.com*", "*?format=*"]
         """
+        import re
         self._blocked_patterns.extend(patterns)
+
+        # Build a combined regex for all patterns (more efficient than multiple routes)
+        regex_patterns = []
         for pattern in patterns:
-            await self._context.route(pattern, lambda route: route.abort())
+            # Convert glob to regex: escape special chars, then convert \* back to .*
+            regex_pattern = re.escape(pattern).replace(r'\*', '.*')
+            regex_patterns.append(regex_pattern)
+
+        if regex_patterns:
+            combined_regex = re.compile('|'.join(regex_patterns), re.IGNORECASE)
+
+            async def block_handler(route):
+                url = route.request.url
+                if combined_regex.search(url):
+                    await route.abort("blockedbyclient")
+                else:
+                    await route.continue_()
+
+            # Use **/* to intercept all requests, filter by regex
+            await self._context.route("**/*", block_handler)
 
     async def set_cache_interceptor(self, interceptor: "CacheInterceptor"):
         """
@@ -493,7 +513,15 @@ class BrowserSession:
         return await self._get_observation(max_retries)
 
     async def _get_observation(self, max_retries: int = 5) -> BrowserObservation:
-        """Get current browser observation with retry logic for page loading"""
+        """Get current browser observation with retry logic for page loading.
+
+        Key improvements:
+        1. Validates content is meaningful before returning to AI
+        2. Retries if content is empty/too short (page still loading)
+        3. Returns clear error messages for blocked/failed pages
+        """
+        MIN_VALID_CONTENT_LENGTH = 50  # Minimum chars for valid content
+
         for attempt in range(max_retries):
             try:
                 url = self._page.url
@@ -503,68 +531,98 @@ class BrowserSession:
                     return BrowserObservation(
                         url=url,
                         title="Error",
-                        accessibility_tree="[Page failed to load - network error]",
+                        accessibility_tree="[Page failed to load - network error. Try a different URL.]",
                     )
 
-                # Wait for page to be fully loaded (network idle = no pending requests)
+                # Check for blocked pages (request was aborted)
+                if url == "about:blank" and attempt > 0:
+                    # Likely blocked by pattern - check if we have a pending URL
+                    return BrowserObservation(
+                        url=url,
+                        title="Blocked",
+                        accessibility_tree="[Navigation was blocked. The URL may be restricted. Try using the main website instead of API endpoints.]",
+                    )
+
+                # Wait for page to be fully loaded with increased timeout
                 page_loaded = False
                 try:
-                    await self._page.wait_for_load_state("networkidle", timeout=10000)
+                    await self._page.wait_for_load_state("networkidle", timeout=15000)
                     page_loaded = True
                 except Exception:
                     # Network idle timeout - page might still be loading
                     # Try domcontentloaded as fallback
                     try:
-                        await self._page.wait_for_load_state("domcontentloaded", timeout=3000)
+                        await self._page.wait_for_load_state("domcontentloaded", timeout=5000)
                         page_loaded = True
                     except Exception:
                         pass
 
                 # If page not loaded and we have retries left, wait and retry
                 if not page_loaded and attempt < max_retries - 1:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.5)
                     continue
 
                 title = await self._page.title()
 
-                # Get accessibility tree
-                a11y_tree = ""
-                try:
-                    a11y_snapshot = await self._page.accessibility.snapshot()
-                    if a11y_snapshot:
-                        a11y_tree = self._format_accessibility_tree(a11y_snapshot)
-                except Exception:
-                    pass
-
-                # If accessibility tree is empty or too short, get page text content
-                # This handles sites like wttr.in that use <pre> tags and ASCII art
-                page_text = ""
-                if len(a11y_tree.strip()) < 100:
+                # Check for cached accessibility tree first (deterministic in cache mode)
+                from liveweb_arena.core.interceptor import get_cached_accessibility_tree
+                cached_tree = get_cached_accessibility_tree(url)
+                if cached_tree:
+                    full_content = cached_tree
+                else:
+                    # Get accessibility tree from live page
+                    a11y_tree = ""
                     try:
-                        # Get visible text content from the page
-                        page_text = await self._page.evaluate("""
-                            () => {
-                                // Try to get text from pre elements first (for ASCII art sites)
-                                const preElements = document.querySelectorAll('pre');
-                                if (preElements.length > 0) {
-                                    return Array.from(preElements).map(el => el.innerText).join('\\n');
-                                }
-                                // Fall back to body text
-                                return document.body.innerText || '';
-                            }
-                        """)
+                        a11y_snapshot = await self._page.accessibility.snapshot()
+                        if a11y_snapshot:
+                            a11y_tree = self._format_accessibility_tree(a11y_snapshot)
                     except Exception:
                         pass
 
-                # Combine accessibility tree and page text
-                full_content = ""
-                if a11y_tree.strip():
-                    full_content = a11y_tree
-                if page_text.strip():
-                    if full_content:
-                        full_content += "\n\n--- Page Text Content ---\n" + page_text
-                    else:
-                        full_content = page_text
+                    # If accessibility tree is empty or too short, get page text content
+                    # This handles sites like wttr.in that use <pre> tags and ASCII art
+                    page_text = ""
+                    if len(a11y_tree.strip()) < 100:
+                        try:
+                            # Get visible text content from the page
+                            page_text = await self._page.evaluate("""
+                                () => {
+                                    // Try to get text from pre elements first (for ASCII art sites)
+                                    const preElements = document.querySelectorAll('pre');
+                                    if (preElements.length > 0) {
+                                        return Array.from(preElements).map(el => el.innerText).join('\\n');
+                                    }
+                                    // Fall back to body text
+                                    return document.body.innerText || '';
+                                }
+                            """)
+                        except Exception:
+                            pass
+
+                    # Combine accessibility tree and page text
+                    full_content = ""
+                    if a11y_tree.strip():
+                        full_content = a11y_tree
+                    if page_text.strip():
+                        if full_content:
+                            full_content += "\n\n--- Page Text Content ---\n" + page_text
+                        else:
+                            full_content = page_text
+
+                # Content validation: if content is too short, page may still be loading
+                content_length = len(full_content.strip())
+                if content_length < MIN_VALID_CONTENT_LENGTH and attempt < max_retries - 1:
+                    # Wait longer and retry - page content not yet available
+                    await asyncio.sleep(2.0)
+                    continue
+
+                # If content is still empty after all retries, provide helpful message
+                if content_length < MIN_VALID_CONTENT_LENGTH:
+                    full_content = f"[Page appears empty or content is minimal ({content_length} chars). The page may be:\n" \
+                                   f"- Still loading (try scrolling or waiting)\n" \
+                                   f"- Blocked (try the main website instead of API endpoints)\n" \
+                                   f"- Requiring JavaScript that failed to load\n" \
+                                   f"Current URL: {url}]\n\n{full_content}"
 
                 # Store full content and check if URL changed (reset offset if so)
                 if url != self._last_url:

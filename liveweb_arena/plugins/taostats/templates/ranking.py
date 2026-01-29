@@ -10,23 +10,21 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 )
-from liveweb_arena.core.gt_collector import GTSourceType
+from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
 
 
 class RankingMetric(Enum):
     """Metrics for subnet ranking queries"""
-    MARKET_CAP = "market_cap"
     PRICE = "price"
     TAO_STAKED = "tao_staked"
 
 
 class RankPosition(Enum):
-    """Ordinal positions for ranking queries"""
+    """Ordinal positions for ranking queries (limited to top 5 for first-page visibility)"""
     SECOND = (2, "2nd", "second")
     THIRD = (3, "3rd", "third")
     FOURTH = (4, "4th", "fourth")
     FIFTH = (5, "5th", "fifth")
-    TENTH = (10, "10th", "tenth")
 
     def __init__(self, num: int, ordinal: str, word: str):
         self.num = num
@@ -39,23 +37,12 @@ class RankingTemplate(QuestionTemplate):
     """
     Template for subnet ranking queries.
 
-    Tests AI's ability to:
-    1. Navigate to subnet list
-    2. Sort by specific metric
-    3. Identify subnet at specific rank position
-
-    Ground truth calculated from Bittensor SDK.
+    Uses taostats API data for ground truth.
     """
 
-    GT_SOURCE = GTSourceType.API_ONLY
+    GT_SOURCE = GTSourceType.HYBRID
 
     PATTERNS: Dict[RankingMetric, List[str]] = {
-        RankingMetric.MARKET_CAP: [
-            "Which subnet has the {position} highest market cap on taostats.io?",
-            "What is the {position} largest subnet by market cap? Check taostats.io/subnets.",
-            "Find the subnet ranked #{rank_num} by market cap on taostats.io.",
-            "Go to taostats.io/subnets and tell me which subnet is {position} in market cap.",
-        ],
         RankingMetric.PRICE: [
             "Which subnet has the {position} highest alpha price on taostats.io?",
             "What subnet ranks #{rank_num} by alpha token price? Check taostats.io/subnets.",
@@ -74,17 +61,8 @@ class RankingTemplate(QuestionTemplate):
         super().__init__("taostats_ranking")
 
     def generate(self, seed: int, variant: Optional[int] = None) -> GeneratedQuestion:
-        """
-        Generate a Taostats ranking question.
-
-        Args:
-            seed: Random seed for reproducible generation
-            variant: Optional variant index for selecting ranking metric.
-                     0=MARKET_CAP, 1=PRICE, 2=TAO_STAKED
-        """
         rng = random.Random(seed)
 
-        # Select metric (use variant if provided)
         metrics_list = list(RankingMetric)
         if variant is not None:
             metric = metrics_list[variant % len(metrics_list)]
@@ -117,7 +95,6 @@ class RankingTemplate(QuestionTemplate):
         rank = validation_info.get("rank", 0)
 
         metric_names = {
-            "market_cap": "market cap",
             "price": "alpha price",
             "tao_staked": "TAO staked",
         }
@@ -125,77 +102,61 @@ class RankingTemplate(QuestionTemplate):
 
         return f"""Task-Specific Rules (Subnet Ranked #{rank} by {metric_display.title()}):
 - Score 1.0: Agent correctly identifies the subnet at rank #{rank} by {metric_display}
-- Score 0.0: Wrong subnet or no clear answer
-
-Note: Rankings may shift slightly due to real-time data. Accept if agent's answer matches
-the expected subnet or is within ±1 rank position."""
+- Score 0.0: Wrong subnet or no clear answer"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
-        """
-        Calculate ground truth by fetching all subnets and sorting by metric.
+        """Calculate ground truth from collected API data (no network fallback)."""
+        metric = validation_info.get("metric", "")
+        target_rank = validation_info.get("rank", 2)
 
-        Returns:
-            GroundTruthResult with the name of the subnet at the specified rank position.
-        """
-        try:
-            import bittensor as bt
+        # Get collected API data
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            subtensor = bt.Subtensor(network="finney")
-            metric = validation_info.get("metric", "")
-            target_rank = validation_info.get("rank", 2)
+        collected = gt_collector.get_collected_api_data()
+        taostats_data = collected.get("taostats", {})
+        subnets_data = taostats_data.get("subnets", {})
 
-            # all_subnets() returns list of DynamicInfo objects directly
-            all_subnet_info = subtensor.all_subnets()
-            if not all_subnet_info:
-                return GroundTruthResult.retry("Failed to fetch subnet list")
+        if not subnets_data:
+            return GroundTruthResult.fail(
+                f"Taostats subnets data not collected. "
+                f"Available keys: {list(collected.keys())[:10]}"
+            )
 
-            # Process all subnets
-            subnet_data = []
-            for info in all_subnet_info:
-                if info.netuid == 0:  # Skip root network
-                    continue
-                try:
-                    price = float(info.price.tao) if info.price else 0
-                    tao_in = float(info.tao_in.tao) if info.tao_in else 0
-                    market_cap = price * tao_in
+        if len(subnets_data) < target_rank:
+            return GroundTruthResult.fail(f"Not enough subnets for rank {target_rank}")
 
-                    name = info.subnet_name or f"Subnet {info.netuid}"
+        # Build and sort subnet list
+        subnet_list = []
+        for netuid, data in subnets_data.items():
+            price = float(data.get("price", 0) or 0)
+            tao_in = float(data.get("tao_in", 0) or 0)
+            name = data.get("name", f"Subnet {netuid}")
 
-                    subnet_data.append({
-                        "netuid": info.netuid,
-                        "name": name,
-                        "price": price,
-                        "tao_staked": tao_in,
-                        "market_cap": market_cap,
-                    })
-                except Exception:
-                    continue
+            subnet_list.append({
+                "netuid": netuid,
+                "name": name,
+                "price": price,
+                "tao_staked": tao_in,
+            })
 
-            if len(subnet_data) < target_rank:
-                return GroundTruthResult.fail(f"Not enough subnets for rank {target_rank}")
+        # Sort by the relevant metric
+        sort_key = {
+            "price": "price",
+            "tao_staked": "tao_staked",
+        }.get(metric, "price")
 
-            # Sort by the relevant metric (descending)
-            sort_key = {
-                "market_cap": "market_cap",
-                "price": "price",
-                "tao_staked": "tao_staked",
-            }.get(metric, "market_cap")
+        subnet_list.sort(key=lambda x: x[sort_key], reverse=True)
 
-            subnet_data.sort(key=lambda x: x[sort_key], reverse=True)
+        if target_rank <= len(subnet_list):
+            return GroundTruthResult.ok(subnet_list[target_rank - 1]["name"])
 
-            # Get subnet at target rank (1-indexed)
-            if target_rank <= len(subnet_data):
-                return GroundTruthResult.ok(subnet_data[target_rank - 1]["name"])
-
-            return GroundTruthResult.fail(f"Rank {target_rank} out of range")
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Bittensor SDK error: {e}")
+        return GroundTruthResult.fail(f"Rank {target_rank} out of range")
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
-        """Validate ranking answer"""
         result = await self.get_ground_truth(validation_info)
 
         if not result.success:
@@ -210,7 +171,6 @@ the expected subnet or is within ±1 rank position."""
         expected_name = result.value
         answer_lower = answer.lower()
 
-        # Check if expected subnet name is in answer
         if expected_name.lower() in answer_lower:
             return ValidationResult(
                 score=1.0,
@@ -229,11 +189,12 @@ the expected subnet or is within ±1 rank position."""
         )
 
     def get_ground_truth_trigger(self, validation_info: dict) -> tuple:
-        """Ranking: LAST for multi-page ranking queries."""
         trigger = UrlPatternTrigger(domains=["taostats.io"])
         return TriggerConfig(trigger=trigger, strategy=FetchStrategy.LAST)
 
     @classmethod
     def get_cache_source(cls) -> str:
-        """Return the cache source name for this template."""
         return "taostats"
+
+    def get_gt_source(self) -> GTSourceType:
+        return self.GT_SOURCE

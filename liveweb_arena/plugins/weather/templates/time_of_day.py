@@ -4,7 +4,6 @@ import random
 from typing import Any, Dict, Optional
 
 from liveweb_arena.core.validators.base import QuestionTemplate, GeneratedQuestion, ValidationResult, register_template
-from ..api_client import WeatherClient
 from liveweb_arena.core.validators.validators import NumericToleranceValidator
 from liveweb_arena.core.ground_truth_trigger import UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult
 from .variables import (
@@ -149,48 +148,60 @@ class TimeOfDayWeatherTemplate(QuestionTemplate):
 - Score 0.0: Values differ significantly"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
+        """Get ground truth from collected API data (no network fallback)."""
         location = validation_info["location"]
         target_date = validation_info["target_date"]  # YYYY-MM-DD format
         hourly_indices = validation_info["hourly_indices"]
         api_field = validation_info["api_field"]
         unit = validation_info.get("unit", "")
 
-        try:
-            data = await WeatherClient.get_weather_data(location)
-            if data is None:
-                return GroundTruthResult.retry(f"Failed to fetch weather for {location}")
-
-            weather = data.get("weather", [])
-
-            # Find day by date (timezone-safe) instead of using array index
-            day_data = None
-            for day in weather:
-                if day.get("date") == target_date:
-                    day_data = day
+        # Get data from collected API data only
+        data = None
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is not None:
+            collected = gt_collector.get_collected_api_data()
+            city_name = location.split(",")[0].strip() if "," in location else location
+            variants = [
+                location, city_name,
+                city_name.replace('+', ' '), location.replace('+', ' '),
+            ]
+            for loc_key in variants:
+                if loc_key in collected:
+                    data = collected[loc_key]
                     break
 
-            if day_data is None:
-                return GroundTruthResult.fail(f"No data for date: {target_date}")
+        if data is None:
+            return GroundTruthResult.fail(f"Weather data for '{location}' not collected")
 
-            hourly = day_data.get("hourly", [])
+        weather = data.get("weather", [])
 
-            # Average values across the time period
-            values = []
-            for idx in hourly_indices:
-                if idx < len(hourly):
-                    val = hourly[idx].get(api_field)
-                    if val is not None:
-                        values.append(float(val))
+        # Find day by date (timezone-safe) instead of using array index
+        day_data = None
+        for day in weather:
+            if day.get("date") == target_date:
+                day_data = day
+                break
 
-            if not values:
-                return GroundTruthResult.fail(f"No hourly data for {api_field}")
+        if day_data is None:
+            return GroundTruthResult.fail(f"No data for date: {target_date}")
 
-            avg_value = sum(values) / len(values)
-            result = f"{avg_value:.0f}{unit}" if unit else f"{avg_value:.0f}"
-            return GroundTruthResult.ok(result)
+        hourly = day_data.get("hourly", [])
 
-        except Exception as e:
-            return GroundTruthResult.retry(f"API error: {e}")
+        # Average values across the time period
+        values = []
+        for idx in hourly_indices:
+            if idx < len(hourly):
+                val = hourly[idx].get(api_field)
+                if val is not None:
+                    values.append(float(val))
+
+        if not values:
+            return GroundTruthResult.fail(f"No hourly data for {api_field}")
+
+        avg_value = sum(values) / len(values)
+        result = f"{avg_value:.0f}{unit}" if unit else f"{avg_value:.0f}"
+        return GroundTruthResult.ok(result)
 
     async def validate_answer(self, answer: str, validation_info: Dict[str, Any]) -> ValidationResult:
         result = await self.get_ground_truth(validation_info)

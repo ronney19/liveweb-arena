@@ -11,7 +11,6 @@ from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, FetchStrategy, TriggerConfig, GroundTruthResult,
 )
 from liveweb_arena.core.gt_collector import GTSourceType
-from liveweb_arena.plugins.stooq.api_client import StooqClient
 
 
 class RankingMetric(Enum):
@@ -262,59 +261,46 @@ The agent must:
 2. Collect the relevant metric for all instruments
 3. Rank them correctly and identify the {position} {direction}"""
 
-    async def _fetch_instrument_data(self, symbol: str) -> GroundTruthResult:
-        """Fetch comprehensive data for a single instrument (via StooqClient)"""
-        try:
-            # Use historical data for 52-week calculations
-            rows = await StooqClient.get_historical_data(symbol)
+    async def _fetch_instrument_data(self, symbol: str, metric: str) -> GroundTruthResult:
+        """Fetch data for a single instrument from collected API data (no network fallback).
 
-            if not rows or len(rows) < 2:
-                return GroundTruthResult.retry(f"Insufficient data for {symbol}")
+        Note: Only current_price and change_percent metrics are supported.
+        week52_gain and distance_from_high require historical data not available in collected cache.
+        """
+        # Check if metric requires historical data
+        if metric in ["week52_gain", "distance_from_high"]:
+            return GroundTruthResult.fail(
+                f"Metric '{metric}' requires historical data not available in collected cache. "
+                "Only 'current_price' and 'change_percent' are supported in cache mode."
+            )
 
-            latest = rows[-1]
-            prev = rows[-2]
+        from liveweb_arena.core.gt_collector import get_current_gt_collector
+        gt_collector = get_current_gt_collector()
+        if gt_collector is None:
+            return GroundTruthResult.fail("No GT collector")
 
-            current_price = self._parse_float(latest.get("Close"))
-            prev_close = self._parse_float(prev.get("Close"))
+        collected = gt_collector.get_collected_api_data()
+        # Try both original and lowercase
+        data = collected.get(symbol) or collected.get(symbol.lower())
+        if not data:
+            return GroundTruthResult.fail(
+                f"Stooq data for '{symbol}' not collected. "
+                f"Available: {list(collected.keys())[:10]}"
+            )
 
-            if current_price is None:
-                return GroundTruthResult.fail(f"Could not parse price for {symbol}")
+        current_price = self._parse_float(data.get("close"))
+        change_percent = self._parse_float(data.get("daily_change_pct"))
 
-            change_percent = None
-            if prev_close and prev_close != 0:
-                change_percent = ((current_price - prev_close) / prev_close) * 100
+        if current_price is None:
+            return GroundTruthResult.fail(f"Could not parse price for {symbol}")
 
-            year_data = rows[-252:] if len(rows) >= 252 else rows
-            highs = []
-            lows = []
-            for row in year_data:
-                high = self._parse_float(row.get("High"))
-                low = self._parse_float(row.get("Low"))
-                if high is not None:
-                    highs.append(high)
-                if low is not None:
-                    lows.append(low)
-
-            week52_high = max(highs) if highs else None
-            week52_low = min(lows) if lows else None
-            week52_gain = None
-            distance_from_high = None
-
-            if week52_low and week52_low != 0:
-                week52_gain = ((current_price - week52_low) / week52_low) * 100
-            if week52_high and week52_high != 0:
-                distance_from_high = ((current_price - week52_high) / week52_high) * 100
-
-            return GroundTruthResult.ok({
-                "symbol": symbol,
-                "current_price": current_price,
-                "change_percent": change_percent,
-                "week52_gain": week52_gain,
-                "distance_from_high": distance_from_high,
-            })
-
-        except Exception as e:
-            return GroundTruthResult.retry(f"Error fetching {symbol}: {e}")
+        return GroundTruthResult.ok({
+            "symbol": symbol,
+            "current_price": current_price,
+            "change_percent": change_percent,
+            "week52_gain": None,  # Not available in collected data
+            "distance_from_high": None,  # Not available in collected data
+        })
 
     def _parse_float(self, value: Any) -> Optional[float]:
         if value is None:
@@ -329,6 +315,9 @@ The agent must:
         Calculate ground truth by fetching all instruments and ranking them.
 
         Returns GroundTruthResult with the name of the instrument at the specified ranking position.
+
+        Note: In cache mode, only 'current_price' and 'change_percent' metrics are supported.
+        Metrics requiring historical data (week52_gain, distance_from_high) will fail.
         """
         instruments = validation_info.get("instruments", [])
         metric = validation_info.get("metric", "change_percent")
@@ -338,21 +327,28 @@ The agent must:
         if not instruments:
             return GroundTruthResult.fail("No instruments provided")
 
+        # Check if metric requires historical data
+        if metric in ["week52_gain", "distance_from_high"]:
+            return GroundTruthResult.fail(
+                f"Metric '{metric}' requires historical data not available in collected cache. "
+                "Only 'current_price' and 'change_percent' are supported in cache mode."
+            )
+
         all_data = []
-        has_retryable_error = False
+        errors = []
         for symbol, name in instruments:
-            result = await self._fetch_instrument_data(symbol)
+            result = await self._fetch_instrument_data(symbol, metric)
             if result.success:
                 data = result.value
                 data["name"] = name
                 all_data.append(data)
-            elif result.retryable:
-                has_retryable_error = True
+            else:
+                errors.append(f"{symbol}: {result.error}")
 
         if len(all_data) < len(instruments):
-            if has_retryable_error:
-                return GroundTruthResult.retry("Failed to fetch data for all instruments")
-            return GroundTruthResult.fail("Could not fetch data for all instruments")
+            return GroundTruthResult.fail(
+                f"Could not fetch data for all instruments. Errors: {'; '.join(errors)}"
+            )
 
         def get_metric_value(d):
             return d.get(metric)
