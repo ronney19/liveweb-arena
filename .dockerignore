@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Cache and results
+cache/
+eval/
+results/
+
+# Documentation
+docs/
+*.md
+
+# IDE
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.*
+
+# Scripts (not needed in image)
+scripts/
