@@ -44,11 +44,11 @@ class Actor:
         Initialize Actor.
 
         Args:
-            api_key: API key for LLM service. Falls back to CHUTES_API_KEY env var.
+            api_key: API key for LLM service. Falls back to API_KEY env var.
             cache_dir: Cache directory (default: ./cache)
             use_cache: Whether to use cache (True) or live mode (False)
         """
-        self.api_key = api_key or os.getenv("CHUTES_API_KEY")
+        self.api_key = api_key or os.getenv("API_KEY")
         self.browser: Optional[BrowserEngine] = None
         self.task_manager = TaskManager(get_all_plugins())
         self._semaphore: Optional[asyncio.Semaphore] = None
@@ -62,7 +62,7 @@ class Actor:
             if env_cache_dir:
                 cache_dir = Path(env_cache_dir)
             else:
-                cache_dir = Path(__file__).parent / "cache"
+                cache_dir = Path("/var/lib/liveweb-arena/cache")
         self.cache_manager = CacheManager(cache_dir)
 
     async def evaluate(

@@ -57,7 +57,7 @@ async def main():
         "--api-key",
         type=str,
         default=None,
-        help="API key (default: from CHUTES_API_KEY env var)",
+        help="API key (default: from API_KEY env var)",
     )
     parser.add_argument(
         "--seed",
@@ -148,9 +148,9 @@ async def main():
     set_verbose(verbose)
 
     # Get API key
-    api_key = args.api_key or os.getenv("CHUTES_API_KEY")
+    api_key = args.api_key or os.getenv("API_KEY")
     if not api_key:
-        print("Error: API key required. Set CHUTES_API_KEY or use --api-key")
+        print("Error: API key required. Set API_KEY or use --api-key")
         sys.exit(1)
 
     # Parse templates from "plugin/template_name[/variant]" format

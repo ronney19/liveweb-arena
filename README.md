@@ -48,7 +48,7 @@ python eval.py --show-registry
 |--------|-------------|---------|
 | `--model` | LLM model name | `zai-org/GLM-4.7-TEE` |
 | `--base-url` | OpenAI-compatible API URL | `https://llm.chutes.ai/v1` |
-| `--api-key` | API key (or set `CHUTES_API_KEY`) | - |
+| `--api-key` | API key (or set `API_KEY`) | - |
 | `--seed` | Random seed for reproducibility | random |
 | `--task-id` | Deterministic task ID (1 to max) | - |
 | `--num-tasks` | Number of sub-tasks (1-4) | 1 |
@@ -191,7 +191,7 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CHUTES_API_KEY` | API key for LLM service (required) | - |
+| `API_KEY` | API key for LLM service (required) | - |
 | `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://llm.chutes.ai/v1` |
 | `LLM_MODEL` | Default model for evaluation | `zai-org/GLM-4.7-TEE` |
 | `COINGECKO_API_KEY` | CoinGecko Pro API key (optional, higher rate limits) | - |

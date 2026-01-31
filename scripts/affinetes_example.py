@@ -82,17 +82,14 @@ async def main():
         print(f"Image built: {image}")
 
     # Step 2: Load environment
-    # Mount local ./cache into container so cached pages are shared and persist.
-    host_cache = str(PROJECT_ROOT / "cache")
+    # Mount host cache into container at the default path.
+    host_cache = CONTAINER_CACHE_DIR
     print(f"Loading environment from image: {image}")
     print(f"Cache mount: {host_cache} -> {CONTAINER_CACHE_DIR}")
     env = af.load_env(
         image=image,
         mode="docker",
-        env_vars={
-            "API_KEY": api_key,
-            "LIVEWEB_CACHE_DIR": CONTAINER_CACHE_DIR,
-        },
+        env_vars={"API_KEY": api_key},
         pull=args.pull,
         force_recreate=args.force_recreate,
         volumes={host_cache: {"bind": CONTAINER_CACHE_DIR, "mode": "rw"}},
