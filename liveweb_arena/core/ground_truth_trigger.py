@@ -18,6 +18,18 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
+class GTFailureType(Enum):
+    """
+    Types of ground truth extraction failures.
+
+    Used to distinguish between valid and invalid evaluations:
+    - DATA_NOT_COLLECTED: Agent didn't visit required pages (VALID evaluation, score=0)
+    - SYSTEM_ERROR: Network/parsing/template errors (INVALID evaluation, sets error field)
+    """
+    DATA_NOT_COLLECTED = "data_not_collected"  # Agent capability issue
+    SYSTEM_ERROR = "system_error"              # Mechanism/infrastructure issue
+
+
 @dataclass
 class GroundTruthResult:
     """
@@ -26,12 +38,14 @@ class GroundTruthResult:
     Distinguishes between:
     - Success: value obtained
     - Retryable failure: temporary error (network timeout, rate limit)
-    - Permanent failure: data doesn't exist or can't be parsed
+    - Data not collected: agent didn't visit required pages (valid eval, score=0)
+    - System error: infrastructure failure (invalid eval, sets error field)
     """
     success: bool
     value: Optional[Any] = None
     error: Optional[str] = None
     retryable: bool = False
+    failure_type: Optional[GTFailureType] = None
 
     @classmethod
     def ok(cls, value: Any) -> "GroundTruthResult":
@@ -45,8 +59,61 @@ class GroundTruthResult:
 
     @classmethod
     def fail(cls, reason: str) -> "GroundTruthResult":
-        """Permanent failure (404, parse error, data doesn't exist)."""
-        return cls(success=False, error=reason, retryable=False)
+        """
+        Permanent failure - data not collected.
+
+        Use this when agent didn't visit required pages or data is missing
+        from collected cache. This is a VALID evaluation (agent capability issue),
+        not a system error.
+
+        For system errors (network, parsing, template bugs), use error() instead.
+        """
+        return cls(
+            success=False,
+            error=reason,
+            retryable=False,
+            failure_type=GTFailureType.DATA_NOT_COLLECTED,
+        )
+
+    @classmethod
+    def not_collected(cls, reason: str) -> "GroundTruthResult":
+        """
+        Data not collected - agent didn't visit required pages.
+
+        This is a VALID evaluation - the agent failed to complete navigation,
+        which is an agent capability issue. Score will be 0, but no error field.
+
+        Alias for fail() with explicit semantics.
+        """
+        return cls(
+            success=False,
+            error=reason,
+            retryable=False,
+            failure_type=GTFailureType.DATA_NOT_COLLECTED,
+        )
+
+    @classmethod
+    def system_error(cls, reason: str) -> "GroundTruthResult":
+        """
+        System error - infrastructure/mechanism failure.
+
+        Use this for network errors, parsing failures, template bugs, etc.
+        This is an INVALID evaluation - the error field will be set.
+        """
+        return cls(
+            success=False,
+            error=reason,
+            retryable=False,
+            failure_type=GTFailureType.SYSTEM_ERROR,
+        )
+
+    def is_system_error(self) -> bool:
+        """Check if this failure is a system error (invalid evaluation)."""
+        return self.failure_type == GTFailureType.SYSTEM_ERROR
+
+    def is_data_not_collected(self) -> bool:
+        """Check if this failure is due to data not being collected (valid evaluation)."""
+        return self.failure_type == GTFailureType.DATA_NOT_COLLECTED
 
 
 class FetchStrategy(Enum):

@@ -14,7 +14,7 @@ from liveweb_arena.core.agent_loop import AgentLoop, BrowserFatalError
 from liveweb_arena.core.parser import AnswerParser
 from liveweb_arena.core.gt_collector import GTCollector, GTSourceType, set_current_gt_collector
 from liveweb_arena.core.cache import CacheManager, CachedPage, CacheFatalError, PageRequirement, normalize_url
-from liveweb_arena.core.interceptor import CacheInterceptor, clear_cached_accessibility_trees
+from liveweb_arena.core.interceptor import CacheInterceptor
 from liveweb_arena.plugins.base import BasePlugin
 from liveweb_arena.plugins import get_plugin, get_all_plugins
 from liveweb_arena.core.validators.llm_validator import validate_answers_with_llm
@@ -213,9 +213,6 @@ class Actor:
 
         # Create browser session
         session = await self.browser.new_session()
-
-        # Clear cached accessibility trees from previous runs
-        clear_cached_accessibility_trees()
 
         # Set up interceptor
         interceptor = CacheInterceptor(
@@ -478,12 +475,19 @@ class Actor:
                 },
             }
 
-            # GT failure is also a mechanism issue — set error if not already set
+            # GT failure handling: distinguish between valid and invalid evaluations
+            # - DATA_NOT_COLLECTED: Agent didn't visit required pages (valid eval, no error)
+            # - SYSTEM_ERROR: Network/parsing/template bugs (invalid eval, set error)
             if not error_message and gt_extraction_failures:
-                failure_details = "; ".join(
-                    f"[{tag}] {reason}" for tag, reason in gt_extraction_failures.items()
-                )
-                error_message = f"GT extraction failed: {failure_details}"
+                # Check if any GT failure is a system error (invalid evaluation)
+                system_errors = []
+                for subtask in task.subtasks:
+                    tag = subtask.answer_tag
+                    if tag in gt_extraction_failures and gt_collector.is_system_error(subtask):
+                        system_errors.append(f"[{tag}] {gt_extraction_failures[tag]}")
+
+                if system_errors:
+                    error_message = f"GT system error: {'; '.join(system_errors)}"
 
             if error_message:
                 result["error"] = error_message

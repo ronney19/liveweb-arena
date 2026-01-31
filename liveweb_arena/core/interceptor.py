@@ -50,22 +50,6 @@ class InterceptorStats:
         }
 
 
-# Global storage for cached accessibility trees (URL -> tree)
-# Used by browser to return deterministic content in cache mode
-_cached_accessibility_trees: Dict[str, str] = {}
-
-
-def get_cached_accessibility_tree(url: str) -> Optional[str]:
-    """Get cached accessibility tree for URL."""
-    normalized = normalize_url(url)
-    return _cached_accessibility_trees.get(normalized)
-
-
-def clear_cached_accessibility_trees():
-    """Clear all cached accessibility trees."""
-    _cached_accessibility_trees.clear()
-
-
 class CacheInterceptor:
     """
     Intercepts browser requests and serves from cache.
@@ -155,6 +139,8 @@ class CacheInterceptor:
         self.allowed_domains = allowed_domains
         self.cache_manager = cache_manager
         self.stats = InterceptorStats()
+        # Per-evaluation storage for cached accessibility trees
+        self._accessibility_trees: Dict[str, str] = {}
 
         # Compile patterns
         all_block_patterns = list(self.BLOCK_PATTERNS)
@@ -221,7 +207,7 @@ class CacheInterceptor:
 
             # Store cached accessibility tree for deterministic evaluation
             if page.accessibility_tree:
-                _cached_accessibility_trees[normalized] = page.accessibility_tree
+                self._accessibility_trees[normalized] = page.accessibility_tree
 
             await route.fulfill(
                 status=200,
@@ -371,6 +357,11 @@ class CacheInterceptor:
         if len(display) > 80:
             display = display[:77] + "..."
         return display
+
+    def get_accessibility_tree(self, url: str) -> Optional[str]:
+        """Get cached accessibility tree for a URL."""
+        normalized = normalize_url(url)
+        return self._accessibility_trees.get(normalized)
 
     def get_stats(self) -> dict:
         """Get interception statistics."""

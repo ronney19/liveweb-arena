@@ -565,8 +565,7 @@ class BrowserSession:
                 title = await self._page.title()
 
                 # Check for cached accessibility tree first (deterministic in cache mode)
-                from liveweb_arena.core.interceptor import get_cached_accessibility_tree
-                cached_tree = get_cached_accessibility_tree(url)
+                cached_tree = self._cache_interceptor.get_accessibility_tree(url) if self._cache_interceptor else None
                 if cached_tree:
                     full_content = cached_tree
                 else:

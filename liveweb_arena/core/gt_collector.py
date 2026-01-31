@@ -7,6 +7,7 @@ Design principle: API DATA ONLY, NO FALLBACK
 - All GT comes from API data - no regex-based page extraction
 """
 
+import contextvars
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,19 +22,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Global reference for hybrid utils to access collected API data
-_current_gt_collector: Optional["GTCollector"] = None
+# Per-task reference for hybrid utils to access collected API data.
+# Uses contextvars so concurrent async evaluations each see their own collector.
+_current_gt_collector: contextvars.ContextVar[Optional["GTCollector"]] = contextvars.ContextVar(
+    "_current_gt_collector", default=None
+)
 
 
 def get_current_gt_collector() -> Optional["GTCollector"]:
-    """Get the current GTCollector instance."""
-    return _current_gt_collector
+    """Get the current GTCollector instance (async-safe)."""
+    return _current_gt_collector.get()
 
 
 def set_current_gt_collector(collector: Optional["GTCollector"]):
-    """Set the current GTCollector instance."""
-    global _current_gt_collector
-    _current_gt_collector = collector
+    """Set the current GTCollector instance (async-safe)."""
+    _current_gt_collector.set(collector)
 
 
 class GTSourceType(Enum):
@@ -80,6 +83,9 @@ class GTCollector:
 
         # API fetch results per subtask tag
         self._api_results: Dict[str, Any] = {}
+
+        # GT failures per subtask tag - stores full GroundTruthResult for failure type info
+        self._gt_failures: Dict[str, "GroundTruthResult"] = {}
 
         # Track visited URLs for each subtask
         self._visited_urls: Dict[str, List[str]] = {st.answer_tag: [] for st in subtasks}
@@ -258,7 +264,7 @@ class GTCollector:
         try:
             result = await plugin.get_ground_truth(subtask.validation_info)
 
-            from liveweb_arena.core.ground_truth_trigger import GroundTruthResult
+            from liveweb_arena.core.ground_truth_trigger import GroundTruthResult, GTFailureType
             if isinstance(result, GroundTruthResult):
                 if result.success:
                     if result.value:  # Only store truthy values
@@ -266,8 +272,14 @@ class GTCollector:
                         val_str = str(result.value)[:60]
                         log("GT", f"[{tag}] = {val_str}{'...' if len(str(result.value)) > 60 else ''}")
                     else:
+                        # Success but falsy value - treat as system error
+                        self._gt_failures[tag] = GroundTruthResult.system_error(
+                            f"success=True but value is falsy: {repr(result.value)}"
+                        )
                         log("GT", f"[{tag}] FAILED: success=True but value is falsy: {repr(result.value)}")
                 else:
+                    # Store the full result to preserve failure_type
+                    self._gt_failures[tag] = result
                     log("GT", f"[{tag}] FAILED: {result.error}")
             else:
                 if result:  # Only store truthy values
@@ -275,9 +287,16 @@ class GTCollector:
                     val_str = str(result)[:60]
                     log("GT", f"[{tag}] = {val_str}{'...' if len(str(result)) > 60 else ''}")
                 else:
+                    # Legacy return value (falsy) - treat as data not collected
+                    self._gt_failures[tag] = GroundTruthResult.not_collected(
+                        f"returned falsy value: {repr(result)}"
+                    )
                     log("GT", f"[{tag}] FAILED: returned falsy value: {repr(result)}")
 
         except Exception as e:
+            # Exception during GT fetch is a system error
+            from liveweb_arena.core.ground_truth_trigger import GroundTruthResult
+            self._gt_failures[tag] = GroundTruthResult.system_error(str(e))
             logger.error(f"GT fetch failed for {tag}: {e}")
             raise
 
@@ -301,6 +320,10 @@ class GTCollector:
         tag = subtask.answer_tag
         visited = self._visited_urls.get(tag, [])
 
+        # Check if we have stored failure information
+        if tag in self._gt_failures:
+            return self._gt_failures[tag].error or "Unknown failure"
+
         if tag in self._api_results:
             # Tag exists but value is falsy (None, "", etc.)
             value = self._api_results[tag]
@@ -310,6 +333,30 @@ class GTCollector:
         if collected:
             return f"API GT not fetched. Collected data: {collected}. Visited: {visited[:3]}"
         return f"No API data collected. Visited: {visited[:3]}"
+
+    def get_failure_result(self, subtask: "SubTask") -> Optional["GroundTruthResult"]:
+        """
+        Get the full GroundTruthResult for a failed subtask.
+
+        Returns None if the subtask succeeded or has no stored failure info.
+        """
+        tag = subtask.answer_tag
+        return self._gt_failures.get(tag)
+
+    def is_system_error(self, subtask: "SubTask") -> bool:
+        """
+        Check if the GT failure for this subtask is a system error.
+
+        System errors indicate invalid evaluations (network, parsing, template bugs).
+        Returns False if the subtask succeeded or failure is due to data not collected.
+        """
+        from liveweb_arena.core.ground_truth_trigger import GTFailureType
+
+        tag = subtask.answer_tag
+        if tag in self._gt_failures:
+            result = self._gt_failures[tag]
+            return result.failure_type == GTFailureType.SYSTEM_ERROR
+        return False
 
     def get_stats(self) -> Dict[str, Any]:
         """Get collection statistics."""
