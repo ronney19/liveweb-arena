@@ -1,13 +1,11 @@
 """Taostats API client using TaoMarketCap Internal API (no rate limiting, no API key)"""
 
-import logging
 import asyncio
 from typing import Any, Dict, List, Optional
 import aiohttp
 
 from liveweb_arena.plugins.base_client import APIFetchError
-
-logger = logging.getLogger(__name__)
+from liveweb_arena.utils.logger import log
 
 # Cache source name
 CACHE_SOURCE = "taostats"
@@ -219,6 +217,30 @@ async def get_subnet_data(subnet_id: int) -> Dict[str, Any]:
     return subnets.get(str(subnet_id), {})
 
 
+def _normalize_emission(subnets: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure emission values are percentages (sum to ~100), not absolute TAO."""
+    if not subnets:
+        return subnets
+    total = sum(float(s.get("emission", 0) or 0) for s in subnets.values())
+    # Absolute TAO values sum to <10; percentages sum to ~100
+    if 0 < total < 50:
+        for s in subnets.values():
+            raw = float(s.get("emission", 0) or 0)
+            s["emission"] = (raw / total) * 100
+    return subnets
+
+
+def _filter_by_emission(subnets: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter subnets to top half by emission, removing low-activity noise subnets."""
+    if not subnets:
+        return subnets
+    ranked = sorted(subnets.items(), key=lambda kv: kv[1].get("emission", 0), reverse=True)
+    keep = len(ranked) // 2
+    filtered = dict(ranked[:keep])
+    log("Filter", f"Emission top-half: {len(subnets)} → {len(filtered)} subnets")
+    return filtered
+
+
 def clear_cache():
     """Clear the subnet cache."""
     global _subnet_cache
@@ -259,3 +281,5 @@ def initialize_cache():
     _subnet_cache = data.get("subnets", {})
     if not _subnet_cache:
         raise APIFetchError("API returned no subnet data", source="taostats")
+
+    _subnet_cache = _filter_by_emission(_subnet_cache)

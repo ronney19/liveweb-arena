@@ -140,6 +140,9 @@ class ThresholdTemplate(QuestionTemplate):
         taostats_data = collected.get("taostats", {})
         subnets_data = taostats_data.get("subnets", {})
 
+        from ..api_client import _normalize_emission
+        subnets_data = _normalize_emission(subnets_data)
+
         if not subnets_data:
             return GroundTruthResult.fail(
                 f"Taostats subnets data not collected. "
@@ -158,13 +161,6 @@ class ThresholdTemplate(QuestionTemplate):
             value = data.get(metric_field, 0)
             if value is None:
                 value = 0
-
-            # Handle emission which might be stored as string
-            if metric_field == "emission":
-                try:
-                    value = float(str(value).replace("%", ""))
-                except:
-                    value = 0
 
             if compare_fn(float(value), threshold):
                 count += 1

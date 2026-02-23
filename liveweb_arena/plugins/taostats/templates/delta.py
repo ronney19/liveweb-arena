@@ -112,6 +112,9 @@ class DeltaTemplate(QuestionTemplate):
         taostats_data = collected.get("taostats", {})
         subnets_data = taostats_data.get("subnets", {})
 
+        from ..api_client import _filter_by_emission
+        subnets_data = _filter_by_emission(subnets_data)
+
         if not subnets_data:
             return GroundTruthResult.fail("Taostats subnets data not collected")
 
