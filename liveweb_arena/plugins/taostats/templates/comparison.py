@@ -149,12 +149,6 @@ class ComparisonTemplate(QuestionTemplate):
         if not subnets:
             return GroundTruthResult.fail("No subnets data in taostats collection")
 
-        if not subnets:
-            return GroundTruthResult.fail(
-                f"Taostats subnets data not collected. "
-                f"Available keys: {list(collected.keys())[:10]}"
-            )
-
         data1 = subnets.get(str(id1), {})
         data2 = subnets.get(str(id2), {})
 

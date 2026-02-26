@@ -180,7 +180,11 @@ class AnalysisTemplate(QuestionTemplate):
 
             price = float(raw_price)
             tao_in = float(raw_tao_in)
-            price_to_stake = price / tao_in if tao_in > 0 else 0
+            if tao_in == 0:
+                return GroundTruthResult.fail(
+                    f"SN{netuid} ({subnet_names[i]}) has tao_in=0, cannot compute price-to-stake ratio"
+                )
+            price_to_stake = price / tao_in
 
             subnet_list.append({
                 "netuid": netuid,

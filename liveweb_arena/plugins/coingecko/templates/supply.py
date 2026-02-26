@@ -182,7 +182,7 @@ class CoinGeckoSupplyTemplate(QuestionTemplate):
         elif metric_type == "circulating_percentage":
             circulating = coin_data.get("circulating_supply")
             max_supply = coin_data.get("max_supply")
-            if circulating and max_supply:
+            if circulating is not None and max_supply is not None:
                 percentage = (circulating / max_supply) * 100
                 return GroundTruthResult.ok(f"{percentage:.1f}%")
             return GroundTruthResult.fail("Missing circulating or max supply data")

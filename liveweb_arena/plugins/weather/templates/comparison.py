@@ -143,9 +143,16 @@ class WeatherComparisonTemplate(QuestionTemplate):
         if data2 is None:
             return GroundTruthResult.fail(f"Weather data for '{city2_name}' not collected")
 
-        # Get current temperatures
-        temp1 = int(data1.get("current_condition", [{}])[0].get("temp_C", 0))
-        temp2 = int(data2.get("current_condition", [{}])[0].get("temp_C", 0))
+        # Get current temperatures — no fallback defaults
+        current1 = data1.get("current_condition")
+        if not current1 or "temp_C" not in current1[0]:
+            return GroundTruthResult.fail(f"No temperature data for '{city1_name}'")
+        temp1 = int(current1[0]["temp_C"])
+
+        current2 = data2.get("current_condition")
+        if not current2 or "temp_C" not in current2[0]:
+            return GroundTruthResult.fail(f"No temperature data for '{city2_name}'")
+        temp2 = int(current2[0]["temp_C"])
 
         if temp1 > temp2:
             return GroundTruthResult.ok(f"{city1_name} ({temp1}°C vs {temp2}°C)")

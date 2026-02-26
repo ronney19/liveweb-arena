@@ -298,7 +298,10 @@ class LocationNameWeatherTemplate(QuestionTemplate):
 
         # Handle "now" queries - use current_condition
         if target_date == "now":
-            current = data.get("current_condition", [{}])[0]
+            current_condition = data.get("current_condition")
+            if not current_condition:
+                return GroundTruthResult.fail("No current_condition in API data")
+            current = current_condition[0]
             # wttr.in uses different field names for current_condition vs hourly:
             # current_condition: temp_C (with underscore), hourly: tempC (no underscore)
             current_field_map = {"tempC": "temp_C"}
@@ -334,16 +337,17 @@ class LocationNameWeatherTemplate(QuestionTemplate):
 
         if api_field in ("maxtempC", "mintempC"):
             if hourly and len(hourly) >= 8:
-                temps = [int(hourly[i].get("tempC", 0)) for i in display_indices if hourly[i].get("tempC")]
+                temps = [int(hourly[i]["tempC"]) for i in display_indices if hourly[i].get("tempC")]
                 if temps:
                     value = max(temps) if api_field == "maxtempC" else min(temps)
         elif api_field == "chanceofrain":
             if hourly and len(hourly) >= 8:
-                chances = [int(hourly[i].get("chanceofrain", 0)) for i in display_indices]
+                chances = [int(hourly[i]["chanceofrain"]) for i in display_indices if hourly[i].get("chanceofrain")]
                 if chances:
                     value = max(chances)
         elif is_today:
-            current = data.get("current_condition", [{}])[0]
+            current_cond = data.get("current_condition")
+            current = current_cond[0] if current_cond else {}
             # Map field names for current_condition (tempC -> temp_C)
             current_field_map = {"tempC": "temp_C"}
             actual_field = current_field_map.get(api_field, api_field)
@@ -638,7 +642,10 @@ class CurrentWeatherTemplate(QuestionTemplate):
                 f"Required URL: https://wttr.in/{url_location}"
             )
 
-        current = data.get("current_condition", [{}])[0]
+        current_condition = data.get("current_condition")
+        if not current_condition:
+            return GroundTruthResult.fail("No current_condition in API data")
+        current = current_condition[0]
         # wttr.in uses different field names for current_condition vs hourly:
         # current_condition: temp_C, FeelsLikeC (with underscore for temp)
         # hourly: tempC, FeelsLikeC (no underscore for temp)
@@ -928,8 +935,8 @@ class MultiDayWeatherTemplate(QuestionTemplate):
                 if not hourly:
                     continue
                 for h in hourly:
-                    chance = float(h.get("chanceofrain", 0))
-                    if chance > 30:
+                    chance_str = h.get("chanceofrain")
+                    if chance_str is not None and float(chance_str) > 30:
                         return GroundTruthResult.ok("Yes")
             return GroundTruthResult.ok("No")
 
@@ -937,7 +944,9 @@ class MultiDayWeatherTemplate(QuestionTemplate):
         daily_dates = []
         for i in range(min(num_days, len(weather))):
             day_data = weather[i]
-            date_str = day_data.get("date", f"Day {i+1}")
+            date_str = day_data.get("date")
+            if date_str is None:
+                return GroundTruthResult.fail(f"No date field in weather day {i}")
             display_indices = [3, 4, 6, 7]
             hourly = day_data.get("hourly")
             if not hourly:
@@ -945,7 +954,7 @@ class MultiDayWeatherTemplate(QuestionTemplate):
 
             if api_field in ("maxtempC", "mintempC"):
                 if hourly and len(hourly) >= 8:
-                    temps = [int(hourly[idx].get("tempC", 0)) for idx in display_indices if hourly[idx].get("tempC")]
+                    temps = [int(hourly[idx]["tempC"]) for idx in display_indices if hourly[idx].get("tempC")]
                     if temps:
                         val = max(temps) if api_field == "maxtempC" else min(temps)
                     else:
@@ -954,7 +963,7 @@ class MultiDayWeatherTemplate(QuestionTemplate):
                     val = day_data.get(api_field)
             elif api_field == "chanceofrain":
                 if hourly and len(hourly) >= 8:
-                    chances = [int(hourly[idx].get("chanceofrain", 0)) for idx in display_indices]
+                    chances = [int(hourly[idx]["chanceofrain"]) for idx in display_indices if hourly[idx].get("chanceofrain")]
                     val = max(chances) if chances else day_data.get(api_field)
                 else:
                     val = day_data.get(api_field)

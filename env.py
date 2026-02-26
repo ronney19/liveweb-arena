@@ -580,7 +580,8 @@ class Actor:
             # Calculate overall score
             # Hard failures (system issues) always get 0 — evaluation is invalid
             # Soft failures (max_steps, parse_failed) use computed scores if available
-            _HARD_FAILURES = {"agent_timeout", "browser_error", "llm_error", "cache_error"}
+            # browser_error = agent capability issue (not system error), uses computed scores
+            _HARD_FAILURES = {"agent_timeout", "llm_error", "cache_error"}
             if failure_reason and failure_reason in _HARD_FAILURES:
                 total_score = 0.0
                 success = False

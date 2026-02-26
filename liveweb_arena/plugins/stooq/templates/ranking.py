@@ -160,8 +160,9 @@ class StooqRankingTemplate(QuestionTemplate):
             position_str = ""  # "highest" / "lowest" already implies first
         elif position == RankPosition.LAST:
             position_str = ""
-            # Flip direction for "last"
+            # "last lowest" = "1st highest", so flip direction AND reset position
             direction = "lowest" if direction == "highest" else "highest"
+            position = RankPosition.FIRST
         else:
             position_str = position.value + " "
 
