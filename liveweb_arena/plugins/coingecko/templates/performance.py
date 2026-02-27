@@ -65,13 +65,13 @@ class CoinGeckoPerformanceTemplate(QuestionTemplate):
         ("avalanche-2", "near"),
         ("uniswap", "aave"),
         ("litecoin", "bitcoin-cash"),
-        ("stellar", "algorand"),
+        ("stellar", "litecoin"),
         ("cosmos", "injective-protocol"),
         ("render-token", "fetch-ai"),
         ("bittensor", "near"),
         ("sui", "aptos"),
         ("arbitrum", "optimism"),
-        ("polygon-ecosystem-token", "immutable-x"),
+        ("polygon-ecosystem-token", "filecoin"),
     ]
 
     def __init__(self):

@@ -4,6 +4,7 @@ import hashlib
 import random
 from typing import Dict, List, Optional, Type
 
+from ..plugins import DISABLED_PLUGINS
 from ..plugins.base import BasePlugin, SubTask
 from .models import CompositeTask
 
@@ -26,6 +27,8 @@ class TaskManager:
 
     def _get_plugin(self, name: str) -> BasePlugin:
         """Get or create plugin instance"""
+        if name in DISABLED_PLUGINS:
+            raise ValueError(f"Plugin '{name}' is disabled. Disabled plugins: {DISABLED_PLUGINS}")
         if name not in self._plugin_instances:
             plugin_cls = self._plugin_classes.get(name)
             if not plugin_cls:

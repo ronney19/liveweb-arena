@@ -117,7 +117,7 @@ A new website should add **at least one** capability dimension not covered by ex
 |---------|--------|-----------|------------------|
 | **CoinGecko** | Crypto | Price, market cap, volume | Real-time |
 | **Stooq** | Finance | OHLC, daily change | Real-time |
-| **Weather** | Weather | Temperature, forecast | Hourly |
+| **Weather** (disabled) | Weather | Temperature, forecast | Hourly |
 | **Taostats** | Blockchain | Subnet metrics | ~12 seconds |
 
 ### 4. Template Quality Standards

@@ -23,6 +23,7 @@ Environment:
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -38,6 +39,8 @@ from liveweb_arena.core.task_registry import TaskRegistry, max_task_id
 
 
 async def main():
+    logging.basicConfig(level=logging.WARNING)
+
     parser = argparse.ArgumentParser(
         description="LiveWeb Arena - Real-time web evaluation for LLM browser agents"
     )

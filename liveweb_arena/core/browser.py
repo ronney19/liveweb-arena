@@ -416,16 +416,18 @@ class BrowserSession:
                         if self._page.url == original_url and text:
                             try:
                                 # Try calling Stooq's cmp_u function directly
-                                safe_text = text.replace("'", r"\'")
+                                import json
+                                safe_text = json.dumps(text)
                                 await self._page.evaluate(f"""
                                     () => {{
+                                        const t = {safe_text};
                                         if (typeof cmp_u === 'function') {{
-                                            cmp_u('{safe_text}');
+                                            cmp_u(t);
                                         }} else {{
                                             // Fallback: direct navigation for search-style inputs
                                             const url = window.location.origin;
                                             if (url.includes('stooq')) {{
-                                                window.location.href = url + '/q/?s=' + encodeURIComponent('{safe_text}');
+                                                window.location.href = url + '/q/?s=' + encodeURIComponent(t);
                                             }}
                                         }}
                                     }}

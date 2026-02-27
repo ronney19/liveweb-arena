@@ -229,7 +229,7 @@ class StooqHistoricalTemplate(QuestionTemplate):
                 details=f"Ground truth unavailable: {result.error}",
             )
 
-        ground_truth = result.value
+        ground_truth = float(result.value)
 
         # Extract number from answer
         import re

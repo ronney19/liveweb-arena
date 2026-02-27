@@ -291,7 +291,9 @@ The agent must:
         sorted_data = sorted(valid_data, key=lambda d: get_metric_value(d), reverse=reverse)
 
         position_map = {"1st": 0, "2nd": 1, "3rd": 2, "last": -1, "2nd last": -2}
-        idx = position_map.get(position, 0)
+        if position not in position_map:
+            return GroundTruthResult.fail(f"Unknown position: {position}")
+        idx = position_map[position]
 
         try:
             result = sorted_data[idx]

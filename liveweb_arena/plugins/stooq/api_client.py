@@ -288,7 +288,7 @@ async def fetch_single_asset_data(symbol: str) -> Optional[Dict[str, Any]]:
     since Stooq's CSV API requires suffixed symbols for some markets.
     """
     if _rate_limited.get():
-        return {}
+        raise StooqRateLimitError("Stooq API rate limited (persistent for this session)")
 
     # Try .us suffix first for bare symbols (canonical form for US stocks)
     variants = [symbol]
@@ -310,7 +310,7 @@ async def fetch_single_asset_data(symbol: str) -> Optional[Dict[str, Any]]:
                     text = await response.text()
                     if "Exceeded the daily hits limit" in text:
                         _rate_limited.set(True)
-                        return {}
+                        raise StooqRateLimitError("Stooq API daily limit exceeded")
 
                     if "No data" in text:
                         continue

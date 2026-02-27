@@ -201,7 +201,7 @@ Key validation points:
                 return GroundTruthResult.retry("Failed to fetch enough market data")
             return GroundTruthResult.fail("Could not fetch data for enough symbols")
 
-        changes = [d.get("change_percent", 0) for d in all_data.values() if d.get("change_percent") is not None]
+        changes = [d["change_percent"] for d in all_data.values() if d.get("change_percent") is not None]
 
         if not changes:
             return GroundTruthResult.fail("No change data available")
@@ -218,8 +218,10 @@ Key validation points:
 
         data_summary = []
         for symbol, data in all_data.items():
-            change_pct = data.get("change_percent", 0)
-            close = data.get("close", 0)
+            change_pct = data.get("change_percent")
+            close = data.get("close")
+            if change_pct is None or close is None:
+                continue
             sign = "+" if change_pct >= 0 else ""
             data_summary.append(f"{symbol}: {close:.2f} ({sign}{change_pct:.2f}%)")
 

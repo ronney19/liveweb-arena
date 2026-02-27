@@ -235,6 +235,19 @@ class TaskRegistry:
         template_ids = cls._combinations[combo_index]
         templates = [cls.TEMPLATES[tid] for tid in template_ids]
 
+        # Check for disabled plugins
+        from liveweb_arena.plugins import DISABLED_PLUGINS
+        disabled_in_combo = [
+            (tid, plugin) for tid, (plugin, _) in zip(template_ids, templates)
+            if plugin in DISABLED_PLUGINS
+        ]
+        if disabled_in_combo:
+            names = ", ".join(f"{plugin}(id={tid})" for tid, plugin in disabled_in_combo)
+            raise ValueError(
+                f"task_id {task_id} includes disabled plugin(s): {names}. "
+                f"Choose a different task_id."
+            )
+
         num_tasks = (variation_seed % 3) + 2
 
         return {
