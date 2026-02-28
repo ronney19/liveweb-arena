@@ -326,35 +326,62 @@ class CacheManager:
                 log("Cache", f"HIT {page_type} (after lock) - {url_display(normalized)}")
                 return cached
 
-            # 4. Actually fetch - both page and API must succeed
+            # 4. Actually fetch - page and API in parallel when possible
             log("Cache", f"MISS {page_type} - fetching {url_display(normalized)}")
             start = time.time()
 
-            # Fetch page HTML and accessibility tree - must succeed
-            try:
-                html, accessibility_tree = await self._fetch_page(url, plugin)
-            except Exception as e:
-                raise CacheFatalError(
-                    f"Page fetch failed (browser cannot load): {e}",
-                    url=url,
-                )
+            import asyncio as _asyncio
 
-            # Fetch API data for data pages - must succeed if required
-            api_data = None
             if need_api:
+                # Fetch HTML and API data concurrently
+                page_task = _asyncio.ensure_future(self._fetch_page(url, plugin))
+                api_task = _asyncio.ensure_future(plugin.fetch_api_data(url))
+
+                # Wait for both, collecting errors
+                page_result = None
+                page_error = None
+                api_data = None
+                api_error = None
+
                 try:
-                    api_data = await plugin.fetch_api_data(url)
+                    page_result = await page_task
                 except Exception as e:
+                    page_error = e
+                    # Cancel API task if page fails — no point caching without HTML
+                    api_task.cancel()
+
+                if page_error is None:
+                    try:
+                        api_data = await api_task
+                    except Exception as e:
+                        api_error = e
+
+                if page_error is not None:
                     raise CacheFatalError(
-                        f"API data fetch failed (GT will be invalid): {e}",
+                        f"Page fetch failed (browser cannot load): {page_error}",
                         url=url,
                     )
-                # API data must not be empty
+                html, accessibility_tree = page_result
+
+                if api_error is not None:
+                    raise CacheFatalError(
+                        f"API data fetch failed (GT will be invalid): {api_error}",
+                        url=url,
+                    )
                 if not api_data:
                     raise CacheFatalError(
                         f"API data is empty (GT will be invalid)",
                         url=url,
                     )
+            else:
+                try:
+                    html, accessibility_tree = await self._fetch_page(url, plugin)
+                except Exception as e:
+                    raise CacheFatalError(
+                        f"Page fetch failed (browser cannot load): {e}",
+                        url=url,
+                    )
+                api_data = None
 
             cached = CachedPage(
                 url=url,
@@ -444,11 +471,24 @@ class CacheManager:
                 )
                 page = await context.new_page()
 
+                # Block tracking/ads to avoid networkidle delays
+                from liveweb_arena.core.block_patterns import should_block_url
+
+                async def _block_tracking(route):
+                    if should_block_url(route.request.url):
+                        await route.abort("blockedbyclient")
+                    else:
+                        await route.continue_()
+
+                await page.route("**/*", _block_tracking)
+
                 await page.goto(url, timeout=60000, wait_until="domcontentloaded")
 
-                # Wait for network idle
+                # Wait for network idle (short timeout: ads are blocked, so
+                # legitimate content loads in ~3-4s; streaming endpoints like
+                # aq*.stooq.com keep connections open indefinitely)
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
+                    await page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
 

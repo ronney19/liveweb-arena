@@ -8,6 +8,7 @@ Usage:
     await page.route("**/*", interceptor.handle_route)
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -16,9 +17,14 @@ from urllib.parse import urlparse
 
 from playwright.async_api import Route
 
-from liveweb_arena.core.cache import CachedPage, CacheManager, normalize_url
+from liveweb_arena.core.block_patterns import TRACKING_BLOCK_PATTERNS
+from liveweb_arena.core.cache import CachedPage, CacheFatalError, CacheManager, PageRequirement, normalize_url
 
 logger = logging.getLogger(__name__)
+
+# Pre-fetch timeout must be less than the main browser's NAVIGATION_TIMEOUT_MS (30s)
+# so that route.abort() reaches the browser BEFORE page.goto() times out.
+PREFETCH_TIMEOUT = 25
 
 
 def log(tag: str, message: str):
@@ -62,47 +68,7 @@ class CacheInterceptor:
     """
 
     # Patterns to always block (tracking, analytics, ads)
-    BLOCK_PATTERNS = [
-        # Google
-        r"google-analytics\.com",
-        r"googletagmanager\.com",
-        r"googlesyndication\.com",
-        r"googleadservices\.com",
-        r"google\.com/recaptcha",
-        r"doubleclick\.net",
-        # Social widgets
-        r"facebook\.com/tr",
-        r"platform\.twitter\.com",
-        r"syndication\.twitter\.com",
-        # Analytics
-        r"hotjar\.com",
-        r"sentry\.io",
-        r"analytics",
-        r"tracking",
-        r"pixel",
-        r"beacon",
-        # Ad networks & sync
-        r"rubiconproject\.com",
-        r"criteo\.com",
-        r"3lift\.com",
-        r"pubmatic\.com",
-        r"media\.net",
-        r"adnxs\.com",
-        r"presage\.io",
-        r"onetag-sys\.com",
-        r"seedtag\.com",
-        r"openx\.net",
-        r"btloader\.com",
-        r"tappx\.com",
-        r"cloudflare\.com/cdn-cgi/challenge",
-        # Generic patterns
-        r"usync",
-        r"syncframe",
-        r"user_sync",
-        r"checksync",
-        # Site-specific ads
-        r"stooq\.com/ads/",
-    ]
+    BLOCK_PATTERNS = TRACKING_BLOCK_PATTERNS
 
     # Patterns to always allow (static resources)
     STATIC_PATTERNS = [
@@ -126,6 +92,7 @@ class CacheInterceptor:
         blocked_patterns: Optional[List[str]] = None,
         cache_manager: Optional[CacheManager] = None,
         url_validator: Optional[callable] = None,
+        plugin_resolver: Optional[Any] = None,
     ):
         """
         Initialize interceptor.
@@ -138,12 +105,16 @@ class CacheInterceptor:
             url_validator: Optional callback (url: str) -> bool for dynamic URL validation.
                           Used by plugins that support external navigation (e.g., HN).
                           Called when domain is not in allowed_domains.
+            plugin_resolver: Optional callback (url: str) -> Optional[BasePlugin].
+                            Resolves URL to plugin for pre-fetch caching.
         """
         self.cached_pages = cached_pages
         self.allowed_domains = allowed_domains
         self.cache_manager = cache_manager
         self.url_validator = url_validator
+        self.plugin_resolver = plugin_resolver
         self.stats = InterceptorStats()
+        self._pending_error: Optional[Exception] = None
         # Per-evaluation storage for cached accessibility trees
         self._accessibility_trees: Dict[str, str] = {}
 
@@ -219,7 +190,11 @@ class CacheInterceptor:
                     pass
 
     async def _handle_document(self, route: Route, url: str):
-        """Handle HTML document requests."""
+        """Handle HTML document requests.
+
+        Pre-fetch caching: on MISS, actively fetches via cache_manager and serves
+        via route.fulfill(). The main browser never hits the network for plugin URLs.
+        """
         normalized = normalize_url(url)
         page = self._find_cached_page(url)
 
@@ -235,23 +210,63 @@ class CacheInterceptor:
                 headers={"content-type": "text/html; charset=utf-8"},
                 body=page.html,
             )
-        else:
-            self.stats.misses += 1
-            self.stats.miss_urls.append(url)
-            log("Intercept", f"MISS document - {self._url_display(url)}")
+            return
 
-            # Check if domain is allowed
-            if self._is_domain_allowed(url):
-                # Allow through to network
-                self.stats.passed += 1
-                await route.continue_()
-            else:
-                # Block - domain not allowed
-                await route.fulfill(
-                    status=403,
-                    headers={"content-type": "text/html"},
-                    body=f"<html><body><h1>Domain not allowed</h1><p>{url}</p></body></html>",
-                )
+        self.stats.misses += 1
+        self.stats.miss_urls.append(url)
+        log("Intercept", f"MISS document - {self._url_display(url)}")
+
+        if not self._is_domain_allowed(url):
+            await route.fulfill(
+                status=403,
+                headers={"content-type": "text/html"},
+                body=f"<html><body><h1>Domain not allowed</h1><p>{url}</p></body></html>",
+            )
+            return
+
+        # Pre-fetch caching: fetch via cache_manager, never let browser hit the network.
+        # Timeout ensures route completes BEFORE main browser's goto times out (30s),
+        # so route.abort() is received by the browser and triggers error detection.
+        if self.cache_manager and self.plugin_resolver:
+            plugin = self.plugin_resolver(url)
+            if plugin:
+                try:
+                    need_api = plugin.needs_api_data(url)
+                    page_req = PageRequirement.data(url) if need_api else PageRequirement.nav(url)
+                    pages = await asyncio.wait_for(
+                        self.cache_manager.ensure_cached([page_req], plugin),
+                        timeout=PREFETCH_TIMEOUT,
+                    )
+                    self.cached_pages.update(pages)
+
+                    cached = pages.get(normalize_url(url))
+                    if cached and cached.html:
+                        if cached.accessibility_tree:
+                            self._accessibility_trees[normalized] = cached.accessibility_tree
+                        await route.fulfill(
+                            status=200,
+                            headers={"content-type": "text/html; charset=utf-8"},
+                            body=cached.html,
+                        )
+                        return
+                except asyncio.TimeoutError:
+                    self._pending_error = CacheFatalError(
+                        f"Pre-fetch timeout ({PREFETCH_TIMEOUT}s)", url=url,
+                    )
+                    await route.abort("failed")
+                    return
+                except CacheFatalError as e:
+                    self._pending_error = e
+                    await route.abort("failed")
+                    return
+                except Exception as e:
+                    self._pending_error = CacheFatalError(str(e), url=url)
+                    await route.abort("failed")
+                    return
+
+        # Fallback: LIVE mode or URL without plugin → pass through to network
+        self.stats.passed += 1
+        await route.continue_()
 
     async def _handle_static(self, route: Route, url: str):
         """Handle static resource requests."""
@@ -281,56 +296,64 @@ class CacheInterceptor:
     def _find_cached_page(self, url: str) -> Optional[CachedPage]:
         """Find cached page for URL.
 
+        Lookup order:
+        1. cached_pages dict (dynamically updated by pre-fetch caching)
+        2. _url_map (built at __init__ from pre-cached pages)
+        3. www variants of the above
+        4. File cache fallback
+
         Only returns pages that are complete (have API data if needed).
-        Incomplete pages are ignored to allow on_navigation to fetch fresh data.
         """
         normalized = normalize_url(url)
         parsed = urlparse(normalized)
 
-        # Try exact match in memory
+        # 1. Check live cached_pages dict (dynamically updated)
+        if normalized in self.cached_pages:
+            page = self.cached_pages[normalized]
+            if page.is_complete():
+                return page
+
+        # 2. Check _url_map (built at init time)
         if normalized in self._url_map:
             return self._url_map[normalized]
 
-        # Try without www in memory
+        # 3. Try www variants
         if parsed.netloc.startswith("www."):
             no_www = normalized.replace("www.", "", 1)
+            if no_www in self.cached_pages:
+                page = self.cached_pages[no_www]
+                if page.is_complete():
+                    return page
             if no_www in self._url_map:
                 return self._url_map[no_www]
-
-        # Try with www in memory
-        if not parsed.netloc.startswith("www."):
+        else:
             with_www = normalized.replace("://", "://www.", 1)
+            if with_www in self.cached_pages:
+                page = self.cached_pages[with_www]
+                if page.is_complete():
+                    return page
             if with_www in self._url_map:
                 return self._url_map[with_www]
 
-        # Try file cache with all URL variations
-        # Note: We only use complete pages from file cache.
-        # Incomplete pages (need API but missing) are skipped - on_navigation
-        # will fetch complete data and add to cached_pages.
+        # 4. File cache fallback
         if self.cache_manager:
-            # Try original URL
-            page = self.cache_manager.get_cached(url)
-            if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
-                self._url_map[normalized] = page
-                return page
-
-            # Try without www in file cache
-            if parsed.netloc.startswith("www."):
-                no_www_url = url.replace("www.", "", 1)
-                page = self.cache_manager.get_cached(no_www_url)
-                if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
-                    self._url_map[normalized] = page
-                    return page
-
-            # Try with www in file cache
-            if not parsed.netloc.startswith("www."):
-                with_www_url = url.replace("://", "://www.", 1)
-                page = self.cache_manager.get_cached(with_www_url)
+            for try_url in self._url_variants(url, parsed):
+                page = self.cache_manager.get_cached(try_url)
                 if page and not page.is_expired(self.cache_manager.ttl) and page.is_complete():
                     self._url_map[normalized] = page
                     return page
 
         return None
+
+    @staticmethod
+    def _url_variants(url: str, parsed) -> List[str]:
+        """Generate URL variants for cache lookup (original, without www, with www)."""
+        variants = [url]
+        if parsed.netloc.startswith("www."):
+            variants.append(url.replace("www.", "", 1))
+        else:
+            variants.append(url.replace("://", "://www.", 1))
+        return variants
 
     def _should_block(self, url: str) -> bool:
         """Check if URL should be blocked."""
@@ -385,6 +408,21 @@ class CacheInterceptor:
         normalized = normalize_url(url)
         return self._accessibility_trees.get(normalized)
 
+    def get_and_clear_error(self) -> Optional[Exception]:
+        """Retrieve and clear any pending error from pre-fetch caching."""
+        err = self._pending_error
+        self._pending_error = None
+        return err
+
+    def raise_if_error(self, url: str = None) -> None:
+        """Check for pending error and raise as CacheFatalError if present."""
+        err = self._pending_error
+        self._pending_error = None
+        if err is not None:
+            if isinstance(err, CacheFatalError):
+                raise err
+            raise CacheFatalError(str(err), url=url)
+
     def get_stats(self) -> dict:
         """Get interception statistics."""
         return self.stats.to_dict()
@@ -400,3 +438,4 @@ class CacheInterceptor:
         self._accessibility_trees.clear()
         self.cached_pages.clear()
         self.stats = InterceptorStats()
+        self._pending_error = None

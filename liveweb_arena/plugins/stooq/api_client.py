@@ -225,38 +225,39 @@ async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
     }
     failed = 0
 
-    # Rate limit: max 5 concurrent requests
+    # Rate limit: max 5 concurrent requests, reuse single session
     semaphore = asyncio.Semaphore(5)
 
-    async def fetch_one(symbol: str):
+    async def fetch_one(session: aiohttp.ClientSession, symbol: str):
         nonlocal failed
         async with semaphore:
             try:
-                async with aiohttp.ClientSession() as session:
-                    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-                    async with session.get(
-                        url,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    ) as response:
-                        if response.status != 200:
-                            failed += 1
-                            return
+                url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as response:
+                    if response.status != 200:
+                        failed += 1
+                        return
 
-                        text = await response.text()
-                        if "Exceeded the daily hits limit" in text:
-                            failed += 1
-                            return
+                    text = await response.text()
+                    if "Exceeded the daily hits limit" in text:
+                        failed += 1
+                        return
 
-                        parsed = _parse_stooq_csv(text, symbol)
-                        if parsed:
-                            result["assets"][symbol] = parsed
+                    parsed = _parse_stooq_csv(text, symbol)
+                    if parsed:
+                        result["assets"][symbol] = parsed
 
             except Exception:
                 failed += 1
 
-    # Fetch all with concurrency control
-    await asyncio.gather(*[fetch_one(s) for s in assets])
+    # Fetch all with concurrency control and shared session
+    async with aiohttp.ClientSession(
+        headers={"User-Agent": "Mozilla/5.0"},
+    ) as session:
+        await asyncio.gather(*[fetch_one(session, s) for s in assets])
 
     result["_meta"]["asset_count"] = len(result["assets"])
     logger.info(f"Fetched {len(result['assets'])} assets from Stooq ({failed} failed)")
