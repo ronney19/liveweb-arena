@@ -169,18 +169,26 @@ class AgentPolicy:
         trajectory: List[TrajectoryStep],
         current_step: int = 1,
         max_steps: int = 30,
+        include_raw_responses: bool = True,
     ) -> str:
-        """Build step prompt with current observation and recent history"""
-        # Format recent steps with raw response (preserves model's thinking/reasoning)
+        """Build step prompt with current observation and recent history.
+
+        When include_raw_responses is True (default), the "Recent Actions" section
+        includes the model's full previous response (including <think> blocks), for
+        live evaluation. When False (e.g. for training datasets), only a short
+        action summary is included so user/environment messages do not contain
+        think tags.
+        """
         recent = trajectory[-self._max_recent_steps:] if trajectory else []
         if recent:
             action_lines = []
             for step in recent:
-                # Include raw response so model sees its own output
-                if step.raw_response:
-                    # Truncate if too long
+                if include_raw_responses and step.raw_response:
                     response_preview = step.raw_response[:500] if len(step.raw_response) > 500 else step.raw_response
                     action_lines.append(f"Step {step.step_num} response: {response_preview}")
+                elif step.action:
+                    action_summary = self._action_summary(step.action)
+                    action_lines.append(f"Step {step.step_num} action: {action_summary}")
                 action_lines.append(f"Step {step.step_num} result: {step.action_result}")
             recent_actions = "\n".join(action_lines) if action_lines else "(no actions yet)"
         else:
@@ -199,6 +207,27 @@ class AgentPolicy:
             remaining_steps=remaining_steps,
             last_step_warning=last_step_warning,
         )
+
+    @staticmethod
+    def _action_summary(action: BrowserAction) -> str:
+        """Short summary of action for display (no <think> / raw response)."""
+        t = action.action_type
+        p = action.params or {}
+        if t == "goto":
+            return f"goto url={p.get('url', '')}"
+        if t == "stop":
+            return "stop (submit answers)"
+        if t == "click":
+            return f"click selector={p.get('selector', '')}"
+        if t == "type":
+            return f"type selector={p.get('selector', '')} text=..."
+        if t in ("scroll", "view_more"):
+            return f"{t} direction={p.get('direction', '')}"
+        if t == "wait":
+            return f"wait seconds={p.get('seconds', '')}"
+        if t in ("click_role", "type_role"):
+            return f"{t} role={p.get('role', '')} name={p.get('name', '')}"
+        return t
 
     def parse_response(self, raw: str) -> Optional[BrowserAction]:
         """
