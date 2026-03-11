@@ -27,7 +27,7 @@ _plugins: Dict[str, Type[BasePlugin]] = {}
 
 # Temporarily disabled plugins (e.g. external service unavailable).
 # Remove entries here when the service comes back online.
-DISABLED_PLUGINS: set = {"weather"}
+DISABLED_PLUGINS: set = set()
 
 
 def _discover_plugins():

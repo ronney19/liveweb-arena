@@ -143,14 +143,22 @@ class HybridChainedDecisionTemplate(QuestionTemplate):
 
         start_url = "https://www.coingecko.com/"
 
+        # Include source and symbol so generate_gt can add required Stooq/Coingecko URLs
+        # for GT collection (dataset generation); otherwise hybrid_chained_decision
+        # would never visit the level1/level2/target pages and GT fails with
+        # "Agent did not visit Stooq page for 'X'".
         validation_info = {
             "level1_asset": {
                 "asset_id": level1_asset.asset_id,
                 "name": level1_asset.name,
+                "source": level1_asset.source,
+                "symbol": level1_asset.symbol or level1_asset.asset_id,
             },
             "level2_asset": {
                 "asset_id": level2_asset.asset_id,
                 "name": level2_asset.name,
+                "source": level2_asset.source,
+                "symbol": level2_asset.symbol or level2_asset.asset_id,
             },
             "threshold": threshold,
             "targets": {
@@ -158,21 +166,25 @@ class HybridChainedDecisionTemplate(QuestionTemplate):
                     "asset_id": both_up_target.asset_id,
                     "name": both_up_target.name,
                     "symbol": both_up_target.symbol,
+                    "source": both_up_target.source,
                 },
                 "first_up_second_down": {
                     "asset_id": first_up_second_down_target.asset_id,
                     "name": first_up_second_down_target.name,
                     "symbol": first_up_second_down_target.symbol,
+                    "source": first_up_second_down_target.source,
                 },
                 "first_down": {
                     "asset_id": first_down_target.asset_id,
                     "name": first_down_target.name,
                     "symbol": first_down_target.symbol,
+                    "source": first_down_target.source,
                 },
                 "neutral": {
                     "asset_id": neutral_target.asset_id,
                     "name": neutral_target.name,
                     "symbol": neutral_target.symbol,
+                    "source": neutral_target.source,
                 },
             },
         }

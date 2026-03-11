@@ -1,8 +1,10 @@
 """Weather API client with caching support (wttr.in)"""
 
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import aiohttp
 from liveweb_arena.plugins.base_client import APIFetchError, BaseAPIClient, RateLimiter, validate_api_response
@@ -63,10 +65,11 @@ async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
         async with semaphore:
             try:
                 async with aiohttp.ClientSession() as session:
-                    url = f"https://wttr.in/{location}?format=j1"
+                    path_part = quote(location, safe="+")
+                    url = f"https://wttr.in/{path_part}?format=j1"
                     async with session.get(
                         url,
-                        timeout=aiohttp.ClientTimeout(total=20),
+                        timeout=aiohttp.ClientTimeout(total=45),
                         headers={"User-Agent": "curl/7.64.1"},
                     ) as response:
                         if response.status != 200:
@@ -84,6 +87,14 @@ async def fetch_cache_api_data() -> Optional[Dict[str, Any]]:
     return result
 
 
+def _format_error(location: str, e: Exception) -> str:
+    """Build a clear error message including exception type and cause."""
+    msg = str(e).strip()
+    if not msg:
+        msg = repr(e)
+    return f"{type(e).__name__} for {location}: {msg}"
+
+
 async def fetch_single_location_data(location: str) -> Dict[str, Any]:
     """
     Fetch weather data for a single location.
@@ -91,7 +102,7 @@ async def fetch_single_location_data(location: str) -> Dict[str, Any]:
     Used by page-based cache: each page caches its own location's data.
 
     Args:
-        location: Location query (e.g., "Tokyo,Japan", "JFK")
+        location: Location query (e.g., "Tokyo,Japan", "JFK", "Mexico+City,Mexico")
 
     Returns:
         Dict with weather JSON data
@@ -99,25 +110,35 @@ async def fetch_single_location_data(location: str) -> Dict[str, Any]:
     Raises:
         APIFetchError: If API request fails or returns invalid data
     """
+    # Encode for path: keep + for spaces, encode comma and other chars (e.g. Mexico+City,Mexico)
+    path_part = quote(location, safe="+")
+    url = f"https://wttr.in/{path_part}?format=j1"
     try:
         async with aiohttp.ClientSession() as session:
-            url = f"https://wttr.in/{location}?format=j1"
             async with session.get(
                 url,
-                timeout=aiohttp.ClientTimeout(total=20),
+                timeout=aiohttp.ClientTimeout(total=45),
                 headers={"User-Agent": "curl/7.64.1"},
             ) as response:
+                body = await response.text()
                 if response.status != 200:
                     raise APIFetchError(
-                        f"status={response.status} for location={location}",
+                        f"status={response.status} for location={location}. body={body[:200]!r}",
                         source="weather",
                         status_code=response.status,
                     )
-                data = await response.json()
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError as json_err:
+                    raise APIFetchError(
+                        f"Invalid JSON for {location}: {_format_error(location, json_err)}. "
+                        f"Response preview: {body[:300]!r}",
+                        source="weather",
+                    ) from json_err
                 validate_api_response(data, dict, f"location={location}")
                 return data
 
     except APIFetchError:
         raise
     except Exception as e:
-        raise APIFetchError(f"Unexpected error for {location}: {e}", source="weather") from e
+        raise APIFetchError(_format_error(location, e), source="weather") from e

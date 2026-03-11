@@ -328,7 +328,15 @@ class LocationNameWeatherTemplate(QuestionTemplate):
                 break
 
         if day_data is None:
-            return GroundTruthResult.fail(f"No forecast data for {target_date}")
+            # Timezone fix: API returns dates in location/server TZ; "today" locally may be
+            # the next day elsewhere. If target_date is local today, use first forecast day.
+            from datetime import datetime
+            local_today = datetime.now().date().strftime("%Y-%m-%d")
+            if target_date == local_today and weather:
+                day_data = weather[0]
+                is_today = True
+            else:
+                return GroundTruthResult.fail(f"No forecast data for {target_date}")
 
         display_indices = [3, 4, 6, 7]
         hourly = day_data.get("hourly")
