@@ -47,12 +47,16 @@ def _extract_urls_from_validation_info(plugin_name: str, validation_info: Dict[s
     info = validation_info
 
     if plugin_name == "taostats":
+        # Use same URL format as generate_gt and plugin (taostats.io/subnets/) so required URLs match training dataset
         if "subnet_id" in info:
             sid = info["subnet_id"]
-            add(f"https://www.taostats.io/subnet/{sid}")
+            add(f"https://taostats.io/subnets/{sid}")
         for sid in info.get("subnet_ids", []):
-            add(f"https://www.taostats.io/subnet/{sid}")
-        if "subnet_ids" in info or "subnet_id" in info:
+            add(f"https://taostats.io/subnets/{sid}")
+        if "netuids" in info:
+            for nid in info["netuids"]:
+                add(f"https://taostats.io/subnets/{nid}")
+        if "subnet_ids" in info or "subnet_id" in info or "netuids" in info:
             add("https://taostats.io/")
             add("https://taostats.io/subnets")
 

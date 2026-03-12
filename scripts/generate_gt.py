@@ -75,6 +75,10 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
                 urls.append(f"https://taostats.io/subnets/{nid}")
         else:
             urls.append("https://taostats.io/subnets")
+        # Match get_required_urls: include list page and homepage when we have detail pages
+        if "subnet_id" in vi or "subnet_ids" in vi or "netuids" in vi:
+            urls.append("https://taostats.io/")
+            urls.append("https://taostats.io/subnets")
     elif plugin_name == "coingecko":
         if "coin_id" in vi:
             urls.append(f"https://www.coingecko.com/en/coins/{vi['coin_id']}")
@@ -87,21 +91,22 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
         else:
             urls.append("https://www.coingecko.com/")
     elif plugin_name == "stooq":
+        # Use same URL format as get_required_urls / templates (q/?s=) so training dataset matches required URLs
         if "symbol" in vi:
-            urls.append(f"https://stooq.com/q/d/?s={vi['symbol']}")
+            urls.append(f"https://stooq.com/q/?s={vi['symbol']}")
         elif "symbols" in vi:
             for s in vi["symbols"]:
-                urls.append(f"https://stooq.com/q/d/?s={s}")
+                urls.append(f"https://stooq.com/q/?s={s}")
         elif "instruments" in vi:
             # stooq_ranking, volatility, etc.: list of (symbol, name) tuples
             for item in vi["instruments"]:
                 sym = item[0] if isinstance(item, (list, tuple)) else item
-                urls.append(f"https://stooq.com/q/d/?s={sym}")
+                urls.append(f"https://stooq.com/q/?s={sym}")
         elif "group1_instruments" in vi or "group2_instruments" in vi:
             for key in ("group1_instruments", "group2_instruments"):
                 for item in vi.get(key, []):
                     sym = item[0] if isinstance(item, (list, tuple)) else item
-                    urls.append(f"https://stooq.com/q/d/?s={sym}")
+                    urls.append(f"https://stooq.com/q/?s={sym}")
         else:
             urls.append("https://stooq.com/")
     elif plugin_name == "hackernews":
@@ -119,11 +124,14 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
         else:
             urls.append("https://openlibrary.org/")
     elif plugin_name == "weather":
+        # Use same URL format as get_required_urls (quote + space to +) so training dataset matches required URLs
+        from urllib.parse import quote
         if "location" in vi:
-            urls.append(f"https://wttr.in/{vi['location']}")
+            loc = str(vi["location"]).replace(" ", "+")
+            urls.append(f"https://wttr.in/{quote(loc, safe='+')}")
         elif "city1_query" in vi and "city2_query" in vi:
-            urls.append(f"https://wttr.in/{vi['city1_query']}")
-            urls.append(f"https://wttr.in/{vi['city2_query']}")
+            urls.append(f"https://wttr.in/{quote(str(vi['city1_query']).replace(' ', '+'), safe='+')}")
+            urls.append(f"https://wttr.in/{quote(str(vi['city2_query']).replace(' ', '+'), safe='+')}")
     elif plugin_name == "hybrid":
         def _hybrid_asset_url(asset: Any) -> Optional[str]:
             if not isinstance(asset, dict):
@@ -134,7 +142,7 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
             if src == "coingecko" and aid:
                 return f"https://www.coingecko.com/en/coins/{aid}"
             if src == "stooq" and sym:
-                return f"https://stooq.com/q/d/?s={sym}"
+                return f"https://stooq.com/q/?s={sym}"
             return None
 
         # hybrid_top_performer, portfolio, etc.: list of assets
@@ -164,7 +172,7 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
                     if "coin" in domain_key or "coingecko" in domain_key:
                         urls.append(f"https://www.coingecko.com/en/coins/{item}")
                     else:
-                        urls.append(f"https://stooq.com/q/d/?s={item}")
+                        urls.append(f"https://stooq.com/q/?s={item}")
         if not urls:
             urls.append("https://www.coingecko.com/")
             urls.append("https://stooq.com/")
