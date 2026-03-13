@@ -120,6 +120,7 @@ class OpenMeteoHourlyExtremaTemplate(QuestionTemplate):
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
+        """Not used — the pipeline uses LLM-based validation via get_validation_rules()."""
         return ValidationResult(
             score=0.0, is_correct=False, expected=None, actual=answer,
             details="Use LLM validation",

@@ -343,10 +343,10 @@ async def test_gt_extraction():
         "city2_name": "London",
         "city2_coord_key": "51.51,-0.13",
     })
-    if gt_comp.value and "Tokyo" in gt_comp.value:
+    if gt_comp.value == "Tokyo":
         ok(f"comparison GT: '{gt_comp.value}'")
     else:
-        fail(f"comparison GT wrong", f"got: {gt_comp}")
+        fail(f"comparison GT wrong", f"expected 'Tokyo', got: {gt_comp}")
 
     # Test openmeteo_hourly_extrema GT (max)
     tmpl_extrema = OpenMeteoHourlyExtremaTemplate()
@@ -418,16 +418,18 @@ for tid, expected_name in expected_ids.items():
     else:
         fail(f"ID {tid} not in TEMPLATES")
 
-# Check Version 4 in TEMPLATE_VERSIONS
+# Check Open Meteo version entry in TEMPLATE_VERSIONS
 versions = TaskRegistry.TEMPLATE_VERSIONS
-if len(versions) >= 4:
-    v4 = versions[3]
-    if sorted(v4) == [85, 86, 87, 88]:
-        ok(f"TEMPLATE_VERSIONS[3] = {v4}")
-    else:
-        fail(f"TEMPLATE_VERSIONS[3] wrong", f"got {v4}")
+# Find the version entry containing our Open Meteo IDs
+om_version_idx = None
+for idx, v in enumerate(versions):
+    if sorted(v) == [85, 86, 87, 88]:
+        om_version_idx = idx
+        break
+if om_version_idx is not None:
+    ok(f"TEMPLATE_VERSIONS[{om_version_idx}] = {versions[om_version_idx]}")
 else:
-    fail(f"Not enough versions", f"got {len(versions)}")
+    fail(f"Open Meteo IDs [85,86,87,88] not found in any TEMPLATE_VERSIONS entry")
 
 # Check task_id parsing works for openmeteo templates
 stats = TaskRegistry.get_stats()

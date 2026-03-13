@@ -119,15 +119,17 @@ class OpenMeteoComparisonTemplate(QuestionTemplate):
         temp2 = float(cw2["temperature"])
 
         if temp1 > temp2:
-            return GroundTruthResult.ok(f"{city1_name} ({temp1}°C vs {temp2}°C)")
+            return GroundTruthResult.ok(city1_name)
         elif temp2 > temp1:
-            return GroundTruthResult.ok(f"{city2_name} ({temp2}°C vs {temp1}°C)")
+            return GroundTruthResult.ok(city2_name)
         else:
-            return GroundTruthResult.ok(f"Same temperature ({temp1}°C)")
+            # Deterministic tie-break: alphabetically first city
+            return GroundTruthResult.ok(min(city1_name, city2_name))
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
     ) -> ValidationResult:
+        """Not used — the pipeline uses LLM-based validation via get_validation_rules()."""
         return ValidationResult(
             score=0.0, is_correct=False, expected=None, actual=answer,
             details="Use LLM validation",
