@@ -64,6 +64,7 @@ Test with `eval.py` using ONE template and ONE seed. Check in order:
 2. **GT Data Source** - GT must use `api_data` from page cache, not independent fetches. Check logs for `[GT] Visit xxx → +N items`.
 3. **Data Visibility** - Required data must appear in the page accessibility tree or visible content, not just in the API.
 4. **Theoretical Solvability** - A clear navigation path must exist from start URL to answer.
+5. **Red Team Review** - Must pass all checks in the Red Team Review section before merge.
 
 **Interpreting results:**
 - Agent fails + GT succeeds = agent capability issue (template is fine)
@@ -135,3 +136,47 @@ Each template must pass these quality gates:
 - Static fact lookups (e.g., "What year was X founded?")
 - Questions requiring data not visible on the page
 - Duplicate logic with existing templates
+
+## Red Team Review (Mandatory)
+
+**Every new website plugin and question template MUST pass red team review before merge.** This is a blocking requirement — no exceptions.
+
+Red team review simulates an adversarial agent that tries to answer correctly **without actually browsing the website**. If such an agent can achieve significantly above-random accuracy, the template fails to test real web interaction ability.
+
+### Mandatory Checks
+
+Each template must survive ALL of the following attack vectors:
+
+#### 1. API Semantic Verification
+- **Call the actual API** with representative parameters and verify the returned data matches the question's semantic intent.
+- Example failure: OL `/search.json?q=science_fiction&sort=editions` ignores the subject keyword — top results are globally popular classics, not science fiction books.
+- **Rule**: If the API's filtering/sorting behavior contradicts the question's natural language meaning, the template is rejected.
+
+#### 2. World Knowledge Attack
+- Attempt to answer the question using only LLM world knowledge (no browsing).
+- Estimate the success rate across all possible variants.
+- **Rule**: If an LLM can achieve >60% accuracy without browsing (random baseline excluded), the template needs redesign. For binary-choice questions, the threshold is >70% (since random baseline is 50%).
+
+#### 3. Memorization Space Analysis
+- Count the **effective** number of unique question-answer pairs (not just parameter combinations — collapse variants that produce identical answers).
+- **Rule**: Effective variant space must be >500. If the answer space is small enough to enumerate in a lookup table, the template is rejected.
+
+#### 4. Answer Stability Check
+- Query the API at two different times (or reason about data volatility) to assess how quickly answers change.
+- **Rule**: If the same question produces the same answer for >30 days, the template's anti-memorization claim is weak. Must combine with a large variant space (>1000) to compensate.
+
+#### 5. Random Baseline Analysis
+- Calculate the probability of guessing correctly by chance given the answer format.
+- **Rule**: Binary choice (50%), multiple choice from small set (>20%), or numeric with known range — all must be documented. Templates with >33% random baseline must require exact numeric answers or multi-step computation to compensate.
+
+#### 6. Cross-Parameter Collapse Detection
+- Verify that different parameter values (e.g., different subjects, different entities) actually produce different answers.
+- Example failure: All 15 OL subjects return the same top books when sorted by editions — 15 subjects collapse to ~1 effective subject.
+- **Rule**: If >30% of parameter values produce identical answers, the effective variant space is overcounted and the template likely fails Check 3.
+
+### Review Process
+
+1. **Reviewer** runs each check with concrete data (API calls, not assumptions).
+2. **Results** are documented in the PR review with pass/fail per check.
+3. **Any single check failure** blocks merge until the template is redesigned.
+4. **GT not_collected is NOT an automatic pass** — if GT cannot be verified through real eval, reviewer must independently verify GT logic by calling the API directly or injecting test cache data.
