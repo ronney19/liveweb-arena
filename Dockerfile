@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
     libpango-1.0-0 libcairo2 libpangocairo-1.0-0 \
     fonts-liberation libappindicator3-1 libnss3-tools \
-    xdg-utils wget curl \
+    xdg-utils wget curl git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
