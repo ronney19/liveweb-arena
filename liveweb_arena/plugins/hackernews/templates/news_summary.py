@@ -159,7 +159,7 @@ Calculate weighted total. Output JSON: {{"score": <0.0-1.0>, "reasoning": "<brie
 
         gt_collector = get_current_gt_collector()
         if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector available")
+            return GroundTruthResult.system_error("No GT collector available")
 
         collected = gt_collector.get_collected_api_data()
         if not collected:

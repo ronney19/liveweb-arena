@@ -1,9 +1,11 @@
 """OpenAI-compatible LLM client with retry and streaming support"""
 
 import asyncio
+import json
 import random
 import time
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Tuple
 
 import httpx
 import openai
@@ -23,6 +25,25 @@ class LLMFatalError(Exception):
         super().__init__(message)
         self.original_error = original_error
         self.attempts = attempts
+
+
+@dataclass
+class ToolCall:
+    """Parsed tool call from LLM response."""
+    id: str
+    function: dict  # {"name": str, "arguments": str}
+
+
+@dataclass
+class LLMResponse:
+    """Structured LLM response supporting both text and tool_calls."""
+    content: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    usage: Optional[dict] = None
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return len(self.tool_calls) > 0
 
 
 class LLMClient:
@@ -163,6 +184,159 @@ class LLMClient:
 
         # All retries exhausted
         raise last_error or Exception("LLM request failed after all retries")
+
+    async def chat_with_tools(
+        self,
+        system: str,
+        user: str,
+        model: str,
+        tools: Optional[List[dict]] = None,
+        temperature: float = 0.7,
+        seed: Optional[int] = None,
+        timeout_s: int = None,
+    ) -> LLMResponse:
+        """
+        Make a chat completion request with optional tool/function calling support.
+
+        When tools are provided, the LLM may respond with tool_calls instead of
+        (or in addition to) text content.
+
+        Args:
+            system: System prompt
+            user: User message
+            model: Model name
+            tools: Optional list of OpenAI-format tool definitions
+            temperature: Sampling temperature
+            seed: Random seed for reproducibility
+            timeout_s: Request timeout in seconds
+
+        Returns:
+            LLMResponse with content, tool_calls, and usage
+        """
+        actual_timeout = timeout_s if timeout_s is not None else self._default_timeout
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+
+        last_error = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = await asyncio.wait_for(
+                    self._make_request_with_tools(
+                        messages=messages,
+                        model=model,
+                        tools=tools,
+                        temperature=temperature,
+                        seed=seed,
+                        timeout_s=actual_timeout,
+                    ),
+                    timeout=actual_timeout,
+                )
+                return response
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"LLM request timed out after {actual_timeout}s")
+                log("LLM", f"Total timeout ({actual_timeout}s) exceeded, attempt {attempt + 1}/{self.MAX_RETRIES}")
+                await self._backoff(attempt)
+                continue
+
+            except openai.RateLimitError as e:
+                last_error = e
+                log("LLM", f"Rate limit hit, attempt {attempt + 1}/{self.MAX_RETRIES}")
+                await self._backoff(attempt)
+
+            except openai.BadRequestError as e:
+                error_msg = str(e).lower()
+                if "is longer than the model" in error_msg or "context_length_exceeded" in error_msg:
+                    raise LLMFatalError(f"Token limit exceeded: {e}", original_error=e, attempts=attempt + 1)
+                raise
+
+            except openai.APIStatusError as e:
+                if e.status_code in self.RETRY_STATUS_CODES:
+                    last_error = e
+                    log("LLM", f"API error {e.status_code}, attempt {attempt + 1}/{self.MAX_RETRIES}")
+                    await self._backoff(attempt)
+                else:
+                    raise
+
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                log("LLM", f"Connection error, attempt {attempt + 1}/{self.MAX_RETRIES}: {e}")
+                await self._backoff(attempt)
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "is longer than the model" in error_msg or "context_length_exceeded" in error_msg:
+                    raise LLMFatalError(f"Token limit exceeded: {e}", original_error=e, attempts=attempt + 1)
+                last_error = e
+                log("LLM", f"Error, attempt {attempt + 1}/{self.MAX_RETRIES}: {e}")
+                await self._backoff(attempt)
+
+        raise last_error or Exception("LLM request failed after all retries")
+
+    async def _make_request_with_tools(
+        self,
+        messages: list,
+        model: str,
+        tools: Optional[List[dict]],
+        temperature: float,
+        seed: Optional[int],
+        timeout_s: int,
+    ) -> LLMResponse:
+        """Make a single API request with optional tool calling (non-streaming for tool support)."""
+        timeout_config = httpx.Timeout(
+            connect=30.0, read=timeout_s, write=30.0, pool=30.0,
+        )
+
+        client = openai.AsyncOpenAI(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=timeout_config,
+            max_retries=0,
+        )
+
+        try:
+            params = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if tools:
+                params["tools"] = tools
+            if seed is not None:
+                params["seed"] = seed
+
+            start_time = time.time()
+            response = await client.chat.completions.create(**params)
+            elapsed = time.time() - start_time
+
+            if is_verbose():
+                log("LLM", f"Tool call response in {elapsed:.1f}s")
+
+            choice = response.choices[0] if response.choices else None
+            if not choice:
+                raise ValueError("LLM returned no choices")
+
+            content = choice.message.content or ""
+            parsed_tool_calls = []
+
+            if choice.message.tool_calls:
+                for tc in choice.message.tool_calls:
+                    parsed_tool_calls.append(ToolCall(
+                        id=tc.id,
+                        function={"name": tc.function.name, "arguments": tc.function.arguments},
+                    ))
+
+            usage = response.usage.model_dump() if response.usage else None
+
+            if not content and not parsed_tool_calls:
+                raise ValueError("LLM returned empty response (no content, no tool_calls)")
+
+            return LLMResponse(content=content.strip(), tool_calls=parsed_tool_calls, usage=usage)
+        finally:
+            await client.close()
 
     async def _make_request(
         self,

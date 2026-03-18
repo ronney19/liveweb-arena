@@ -109,7 +109,7 @@ class TaskManager:
         plugin_hints: Dict[str, str] = {}
         for plugin_name in plugins_to_use:
             plugin = self._get_plugin(plugin_name)
-            plugin_hints[plugin_name] = plugin.usage_hint
+            plugin_hints[plugin_name] = f"Use {', '.join(plugin.allowed_domains)} to find information."
 
         # Build combined intent (without start_url - Agent decides navigation)
         combined_intent = self._build_combined_intent(subtasks)

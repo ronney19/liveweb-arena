@@ -204,16 +204,20 @@ class CacheInterceptor:
         except Exception as e:
             logger.error(f"Interceptor error for {url}: {e}")
             self.stats.errors += 1
-            # Fallback: let the request through to network instead of aborting.
-            # Aborting a click-initiated document navigation produces chrome-error://
-            # which the AI sees as "Page failed to load - network error".
+            # Never fall back to live network — that would silently break
+            # cache-mode determinism. Fulfill document requests with an error
+            # page (avoids chrome-error://); abort all other resource types.
             try:
-                await route.continue_()
-            except Exception:
-                try:
+                if resource_type == "document":
+                    await route.fulfill(
+                        status=500,
+                        headers={"content-type": "text/html"},
+                        body=f"<html><body><h1>Interceptor Error</h1><p>{e}</p></body></html>",
+                    )
+                else:
                     await route.abort("failed")
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
     async def _handle_document(self, route: Route, url: str):
         """Handle HTML document requests.
@@ -373,7 +377,9 @@ class CacheInterceptor:
 
         # 2. Check _url_map (built at init time)
         if normalized in self._url_map:
-            return self._url_map[normalized]
+            page = self._url_map[normalized]
+            if page.is_complete():
+                return page
 
         # 3. Try www variants
         if parsed.netloc.startswith("www."):
@@ -383,7 +389,9 @@ class CacheInterceptor:
                 if page.is_complete():
                     return page
             if no_www in self._url_map:
-                return self._url_map[no_www]
+                page = self._url_map[no_www]
+                if page.is_complete():
+                    return page
         else:
             with_www = normalized.replace("://", "://www.", 1)
             if with_www in self.cached_pages:
@@ -391,7 +399,9 @@ class CacheInterceptor:
                 if page.is_complete():
                     return page
             if with_www in self._url_map:
-                return self._url_map[with_www]
+                page = self._url_map[with_www]
+                if page.is_complete():
+                    return page
 
         # 4. File cache fallback
         if self.cache_manager:

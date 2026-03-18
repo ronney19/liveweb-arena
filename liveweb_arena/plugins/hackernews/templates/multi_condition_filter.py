@@ -170,7 +170,7 @@ class HackerNewsMultiConditionFilterTemplate(QuestionTemplate):
 
         gt_collector = get_current_gt_collector()
         if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector")
+            return GroundTruthResult.system_error("No GT collector")
 
         collected = gt_collector.get_collected_api_data()
         if not collected:

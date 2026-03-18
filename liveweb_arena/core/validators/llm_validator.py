@@ -1,11 +1,11 @@
 """LLM-based answer validator for flexible answer matching"""
 
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List
 import json
+import os
 import re
 
-from .base import ValidationResult
 from ...utils.logger import log
 
 
@@ -42,12 +42,40 @@ DEFAULT_TASK_RULES = """Task-Specific Rules:
 # Note: NO_GROUND_TRUTH_PROMPT removed - ground truth is always required
 
 # Validation models tried in order. If one fails, the next is used.
+# These are defaults for the original provider stack.
 VALIDATION_MODELS: List[str] = [
     "openai/gpt-oss-120b-TEE",
     "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
     "Qwen/Qwen2.5-72B-Instruct",
     "Qwen/Qwen3-32B",
 ]
+
+OPENAI_VALIDATION_MODELS: List[str] = [
+    "gpt-4",
+    "gpt-3.5-turbo",
+]
+
+
+def _get_validation_models(llm_client) -> List[str]:
+    """
+    Resolve validation models from environment or provider-specific defaults.
+
+    Priority:
+    1. VALIDATION_MODELS env var (comma-separated)
+    2. OpenAI-safe defaults when base_url points to api.openai.com
+    3. Project default VALIDATION_MODELS
+    """
+    env_models = os.getenv("VALIDATION_MODELS", "")
+    if env_models.strip():
+        models = [m.strip() for m in env_models.split(",") if m.strip()]
+        if models:
+            return models
+
+    base_url = str(getattr(llm_client, "_base_url", "")).lower()
+    if "api.openai.com" in base_url:
+        return OPENAI_VALIDATION_MODELS
+
+    return VALIDATION_MODELS
 
 
 class LLMValidator:
@@ -123,8 +151,9 @@ class LLMValidator:
         )
 
         # Try each validation model in order
+        validation_models = _get_validation_models(self._llm_client)
         last_error = None
-        for model in VALIDATION_MODELS:
+        for model in validation_models:
             try:
                 response, _ = await self._llm_client.chat(
                     system="You are a precise answer validator. Output only valid JSON.",

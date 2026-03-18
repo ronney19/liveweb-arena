@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from liveweb_arena.core.browser import BrowserEngine, BrowserSession
 from liveweb_arena.core.task_manager import TaskManager
-from liveweb_arena.core.agent_policy import AgentPolicy
+from liveweb_arena.core.agent_protocol import FunctionCallingProtocol
 from liveweb_arena.core.agent_loop import AgentLoop, BrowserFatalError
 from liveweb_arena.core.parser import AnswerParser
 from liveweb_arena.core.gt_collector import GTCollector, set_current_gt_collector
@@ -128,8 +128,8 @@ class EpisodeState:
     # GT collection state
     gt_collector: GTCollector
 
-    # Agent state
-    policy: AgentPolicy
+    # Agent protocol (function calling)
+    policy: Any  # FunctionCallingProtocol
     system_prompt: str
 
     # Step tracking
@@ -210,10 +210,7 @@ class Actor:
                 plugins_used[subtask.plugin_name] = plugin
                 if hasattr(plugin, 'allowed_domains'):
                     allowed_domains.update(plugin.allowed_domains)
-                if hasattr(plugin, 'get_blocked_patterns'):
-                    blocked_patterns.extend(plugin.get_blocked_patterns())
-                elif hasattr(plugin, 'blocked_url_patterns'):
-                    blocked_patterns.extend(plugin.blocked_url_patterns)
+                blocked_patterns.extend(plugin.get_blocked_patterns())
                 if hasattr(plugin, 'clear_external_urls'):
                     plugin.clear_external_urls()
         return plugins_used, allowed_domains, list(set(blocked_patterns))
@@ -417,10 +414,11 @@ class Actor:
                     interceptor, cached_pages, plugins_used, gt_collector, obs, self.use_cache,
                 )
 
+            active_protocol = FunctionCallingProtocol()
             agent_loop = AgentLoop(
                 session=session,
                 llm_client=llm_client,
-                policy=AgentPolicy(),
+                protocol=active_protocol,
                 max_steps=effective_max_steps,
                 on_navigation=on_navigation,
                 on_observation=on_observation,
@@ -575,6 +573,35 @@ class Actor:
                 total_score = 0.0
                 success = False
 
+            # Compute step-wise rewards from trajectory (post-hoc)
+            reward_calc = StepwiseRewardCalculator(
+                target_assets=set(),
+                required_domains=allowed_domains,
+            )
+            step_rewards = []
+            for step in trajectory:
+                url = step.observation.url
+                r = reward_calc.calculate_step_reward(
+                    url=url,
+                    action_result=step.action_result,
+                    collected_asset_ids=set(),
+                    is_blocked=interceptor._should_block(url) if url != "about:blank" else False,
+                    parse_failed=(step.action is None),
+                )
+                step_rewards.append(r.to_dict())
+
+            truncated = failure_reason == "max_steps_reached"
+            terminal_reward = reward_calc.calculate_terminal_reward(
+                validation_score=total_score,
+                steps_used=len(trajectory),
+                max_steps=effective_max_steps,
+                truncated=truncated,
+            )
+
+            cumulative_step = sum(r["total"] for r in step_rewards)
+            total_reward = cumulative_step + terminal_reward.total
+            log("Actor", f"Rewards: step={cumulative_step:.3f}, terminal={terminal_reward.total:.3f}, total={total_reward:.3f}")
+
             # Get interceptor stats
             interceptor_stats = interceptor.get_stats()
             log("Actor", f"Cache stats: {interceptor_stats['hits']} hits, {interceptor_stats['misses']} misses, "
@@ -586,7 +613,7 @@ class Actor:
                 final_url = trajectory[-1].observation.url
 
             # Build conversation history
-            conversation = self._build_conversation(task, trajectory)
+            conversation = self._build_conversation(task, trajectory, active_protocol)
 
             result = {
                 "task_name": f"liveweb_arena:{num_subtasks}tasks",
@@ -604,6 +631,12 @@ class Actor:
                     "conversation": conversation,
                     "failure_reason": failure_reason,
                     "cache_stats": interceptor_stats,
+                },
+                "rewards": {
+                    "step_rewards": step_rewards,
+                    "terminal_reward": terminal_reward.to_dict(),
+                    "cumulative_step_reward": cumulative_step,
+                    "total_reward": total_reward,
                 },
             }
 
@@ -656,48 +689,23 @@ class Actor:
         self,
         task,
         trajectory: List,
+        protocol,
     ) -> List[dict]:
-        """Build conversation history from task and trajectory."""
-        from liveweb_arena.core.agent_policy import AgentPolicy
-
+        """Build conversation history in function calling format (tool_calls/tool messages)."""
         conversation = []
 
-        # Build system prompt
-        policy = AgentPolicy()
-        system_content = policy.build_system_prompt(task)
+        system_content = protocol.build_system_prompt(task)
+        system_msg = {"role": "system", "content": system_content}
 
-        conversation.append({
-            "role": "system",
-            "content": system_content,
-            "metadata": {
-                "type": "instructions",
-                "plugins": list(task.plugin_hints.keys()) if task.plugin_hints else [],
-                "num_subtasks": len(task.subtasks),
-            }
-        })
+        # Include tool definitions in the export for reproducibility
+        tools = protocol.get_tools()
+        if tools:
+            system_msg["tools"] = tools
 
-        # Alternating user (environment) and assistant (agent) turns
+        conversation.append(system_msg)
+
         for step in trajectory:
-            conversation.append({
-                "role": "user",
-                "content": step.prompt,
-                "metadata": {
-                    "type": "environment",
-                    "step": step.step_num,
-                    "url": step.observation.url,
-                }
-            })
-
-            conversation.append({
-                "role": "assistant",
-                "content": step.raw_response,
-                "metadata": {
-                    "type": "agent_action",
-                    "step": step.step_num,
-                    "action_type": step.action.action_type if step.action else None,
-                    "action_result": step.action_result,
-                }
-            })
+            conversation.extend(protocol.serialize_step(step))
 
         return conversation
 
@@ -808,8 +816,8 @@ class Actor:
                 required_domains=required_domains,
             )
 
-            # Build agent policy and system prompt
-            policy = AgentPolicy()
+            # Build agent protocol and system prompt
+            policy = FunctionCallingProtocol()
             system_prompt = policy.build_system_prompt(task)
 
             # Navigate to about:blank and get initial observation

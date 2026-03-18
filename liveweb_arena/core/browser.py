@@ -6,6 +6,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from .block_patterns import STEALTH_BROWSER_ARGS, STEALTH_USER_AGENT
 from .models import BrowserObservation, BrowserAction
+from ..utils.logger import log
 
 if TYPE_CHECKING:
     from .interceptor import CacheInterceptor
@@ -117,9 +118,11 @@ class BrowserSession:
             except Exception:
                 # Network idle timeout is acceptable, page may still be usable
                 pass
-        except Exception:
-            # Navigation exception - page may show error, return observation anyway
-            pass
+        except Exception as e:
+            # Navigation failed — browser may show error page (chrome-error://).
+            # Log but don't raise: _get_observation() detects error pages and
+            # returns them as visible observations so the AI can react.
+            log("Browser", f"Navigation failed for {url[:80]}: {type(e).__name__}: {e}")
 
         # Return observation regardless of whether it's an error page
         # AI can see the error and decide what to do
@@ -147,9 +150,8 @@ class BrowserSession:
                         await self._page.wait_for_load_state("networkidle", timeout=10000)
                     except Exception:
                         pass
-                except Exception:
-                    # Navigation exception - page may show error, continue to return observation
-                    pass
+                except Exception as e:
+                    log("Browser", f"Navigation failed for {url[:80]}: {type(e).__name__}: {e}")
 
             elif action_type == "click":
                 selector = params.get("selector", "")

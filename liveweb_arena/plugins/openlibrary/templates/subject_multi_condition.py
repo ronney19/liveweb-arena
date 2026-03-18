@@ -191,7 +191,7 @@ class OpenLibrarySubjectMultiConditionTemplate(QuestionTemplate):
         # This ensures GT uses the same data bound to the page (CLAUDE.md).
         gt_collector = get_current_gt_collector()
         if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector available")
+            return GroundTruthResult.system_error("No GT collector available")
 
         collected = gt_collector.get_collected_api_data()
 

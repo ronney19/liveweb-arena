@@ -128,6 +128,12 @@ async def main():
         action="store_true",
         help="Use live mode (no caching, real-time web requests)",
     )
+    parser.add_argument(
+        "--export-sft",
+        type=str,
+        default=None,
+        help="Export successful trajectory as SFT .jsonl (appends to file)",
+    )
 
     args = parser.parse_args()
 
@@ -267,6 +273,40 @@ async def main():
                 print(f"\n--- {label} URLs ({len(urls)} unique) ---")
                 for domain, count in domain_counts.most_common():
                     print(f"  {domain}: {count}")
+
+        # Print reward summary
+        rewards = result.get("rewards")
+        if rewards:
+            print()
+            print("--- Rewards ---")
+            print(f"Step rewards: {rewards['cumulative_step_reward']:.3f} ({len(rewards['step_rewards'])} steps)")
+            print(f"Terminal reward: {rewards['terminal_reward']['total']:.3f}")
+            print(f"Total reward: {rewards['total_reward']:.3f}")
+            terminal_signals = rewards['terminal_reward'].get('signals', [])
+            if terminal_signals:
+                for s in terminal_signals:
+                    print(f"  {s['signal']}: {s['value']:+.3f} ({s['reason']})")
+
+        # Export as SFT training data if requested
+        if args.export_sft and result["success"]:
+            sft_record = {
+                "messages": extra.get("conversation", []),
+                "rewards": rewards,
+                "metadata": {
+                    "task_name": result["task_name"],
+                    "score": result["score"],
+                    "seed": extra.get("seed"),
+                    "model": args.model,
+                    "steps": len(rewards["step_rewards"]) if rewards else 0,
+                },
+            }
+            sft_path = Path(args.export_sft)
+            sft_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(sft_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(sft_record, ensure_ascii=False) + "\n")
+            print(f"\nSFT trajectory exported to: {sft_path}")
+        elif args.export_sft and not result["success"]:
+            print(f"\nSFT export skipped: evaluation not successful (score={result['score']:.2f})")
 
         # Save to file
         if args.output:

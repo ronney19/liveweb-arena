@@ -187,34 +187,6 @@ class BasePlugin(ABC):
         """
         pass
 
-    # ===== Deprecated methods (for backward compatibility) =====
-    # These will be removed after full migration
-
-    @property
-    def supported_sites(self) -> List[str]:
-        """Deprecated: Use allowed_domains instead."""
-        return self.allowed_domains
-
-    @property
-    def description(self) -> str:
-        """Deprecated: Plugin description."""
-        return f"{self.name} plugin"
-
-    @property
-    def usage_hint(self) -> str:
-        """Deprecated: Usage hint for the agent."""
-        return f"Use {', '.join(self.allowed_domains)} to find information."
-
-    @property
-    def blocked_url_patterns(self) -> List[str]:
-        """Deprecated: Use get_blocked_patterns() instead."""
-        return self.get_blocked_patterns()
-
-    @property
-    def cache_sources(self) -> List[str]:
-        """Deprecated: Cache sources for this plugin."""
-        return [self.name]
-
     async def generate_task(self, seed: int, template_name: str = None, variant: int = None) -> SubTask:
         """
         Generate a task using registered templates.

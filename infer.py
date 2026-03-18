@@ -24,7 +24,7 @@ import sys
 import time
 
 from liveweb_arena.core.browser import BrowserEngine
-from liveweb_arena.core.agent_policy import AgentPolicy
+from liveweb_arena.core.agent_protocol import FunctionCallingProtocol
 from liveweb_arena.core.agent_loop import AgentLoop
 from liveweb_arena.core.parser import AnswerParser
 from liveweb_arena.utils.llm_client import LLMClient
@@ -71,7 +71,7 @@ async def run_inference(
             agent_loop = AgentLoop(
                 session=session,
                 llm_client=llm_client,
-                policy=AgentPolicy(),
+                protocol=FunctionCallingProtocol(),
                 max_steps=max_steps,
             )
 

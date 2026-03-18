@@ -50,7 +50,7 @@ Set via TASK_REGISTRY_VERSION env var. Default: latest version.
 
 import os
 from itertools import combinations
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Tuple, Any
 
 
 # Template IDs excluded per registry version.
@@ -138,6 +138,8 @@ class TaskRegistry:
         # Open Library templates
         80: ("openlibrary", "openlibrary_book_stats"),
         81: ("openlibrary", "openlibrary_subject_multi_condition"),
+        82: ("openlibrary", "openlibrary_book_comparison"),
+        84: ("openlibrary", "openlibrary_author_editions"),
     }
 
     # Template versions - each version's combinations come AFTER all previous versions
@@ -160,6 +162,8 @@ class TaskRegistry:
         [75, 76, 77, 78],
         # Version 3: Open Library templates
         [80, 81],
+        # Version 4: Additional Open Library templates
+        [82, 84],
     ]
 
     # Combination registry: list of template ID tuples

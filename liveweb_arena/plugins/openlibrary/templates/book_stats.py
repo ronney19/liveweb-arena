@@ -11,6 +11,7 @@ import random
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from .common import titles_match
 from liveweb_arena.core.validators.base import (
     QuestionTemplate, GeneratedQuestion, ValidationResult, register_template,
 )
@@ -155,7 +156,7 @@ class OpenLibraryBookStatsTemplate(QuestionTemplate):
 
         gt_collector = get_current_gt_collector()
         if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector")
+            return GroundTruthResult.system_error("No GT collector")
 
         collected = gt_collector.get_collected_api_data()
         if not collected:
@@ -173,14 +174,14 @@ class OpenLibraryBookStatsTemplate(QuestionTemplate):
                     if not isinstance(work, dict):
                         continue
                     work_title = work.get("title", "")
-                    if self._titles_match(title, work_title):
+                    if titles_match(title, work_title):
                         value = work.get(metric)
                         if value is not None:
                             return GroundTruthResult.ok(str(value))
 
             # Check direct work data (from work detail page)
             work_title = data.get("title", "")
-            if self._titles_match(title, work_title):
+            if titles_match(title, work_title):
                 value = data.get(metric)
                 if value is not None:
                     return GroundTruthResult.ok(str(value))
@@ -189,13 +190,6 @@ class OpenLibraryBookStatsTemplate(QuestionTemplate):
             f"Book '{title}' not found in collected data. "
             f"Agent needs to search and visit the book page."
         )
-
-    @staticmethod
-    def _titles_match(expected: str, actual: str) -> bool:
-        """Fuzzy title match: case-insensitive, ignore punctuation."""
-        def normalize(s: str) -> str:
-            return "".join(c.lower() for c in s if c.isalnum() or c == " ").strip()
-        return normalize(expected) in normalize(actual) or normalize(actual) in normalize(expected)
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
