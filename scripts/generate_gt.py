@@ -110,7 +110,14 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
         else:
             urls.append("https://stooq.com/")
     elif plugin_name == "hackernews":
-        urls.append("https://news.ycombinator.com/")
+        # category_comparison needs Ask HN and Show HN category pages for GT
+        cat1 = vi.get("category1_slug")
+        cat2 = vi.get("category2_slug")
+        if cat1 and cat2:
+            urls.append(f"https://news.ycombinator.com/{cat1}")
+            urls.append(f"https://news.ycombinator.com/{cat2}")
+        else:
+            urls.append("https://news.ycombinator.com/")
     elif plugin_name == "openlibrary":
         # openlibrary_book_stats: need search page for book (GT uses works or work detail from collector)
         if "search_query" in vi:
@@ -132,6 +139,31 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
         elif "city1_query" in vi and "city2_query" in vi:
             urls.append(f"https://wttr.in/{quote(str(vi['city1_query']).replace(' ', '+'), safe='+')}")
             urls.append(f"https://wttr.in/{quote(str(vi['city2_query']).replace(' ', '+'), safe='+')}")
+    elif plugin_name == "openmeteo":
+        def _openmeteo_docs_url(coord_key: str) -> str:
+            if not coord_key:
+                return ""
+            parts = str(coord_key).strip().split(",")
+            if len(parts) != 2:
+                return ""
+            try:
+                lat, lon = float(parts[0]), float(parts[1])
+                return f"https://open-meteo.com/en/docs?latitude={lat}&longitude={lon}"
+            except ValueError:
+                return ""
+        if "coord_key" in vi:
+            u = _openmeteo_docs_url(vi["coord_key"])
+            if u:
+                urls.append(u)
+        elif "city1_coord_key" in vi and "city2_coord_key" in vi:
+            u1 = _openmeteo_docs_url(vi["city1_coord_key"])
+            u2 = _openmeteo_docs_url(vi["city2_coord_key"])
+            if u1:
+                urls.append(u1)
+            if u2:
+                urls.append(u2)
+        else:
+            urls.append("https://open-meteo.com/en/docs")
     elif plugin_name == "hybrid":
         def _hybrid_asset_url(asset: Any) -> Optional[str]:
             if not isinstance(asset, dict):

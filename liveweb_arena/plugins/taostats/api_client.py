@@ -105,6 +105,9 @@ async def fetch_all_subnets() -> Dict[str, Any]:
     """
     Fetch all subnets from TaoMarketCap Internal API.
 
+    Retries up to 3 times on transient errors (network, timeout, decode) so that
+    GT collection and training dataset generation are more resilient.
+
     Returns:
         {
             "subnets": {
@@ -114,42 +117,48 @@ async def fetch_all_subnets() -> Dict[str, Any]:
         }
     """
     subnets = {}
+    last_error = None
+    max_attempts = 3
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Fetch all subnets (paginated, get up to 200)
-            async with session.get(
-                f"{API_BASE_URL}/subnets",
-                params={"limit": 200},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    raise APIFetchError(
-                        f"status={resp.status}, body={body[:500]}",
-                        source="taostats",
-                        status_code=resp.status,
-                    )
+    for attempt in range(max_attempts):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{API_BASE_URL}/subnets",
+                    params={"limit": 200},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        raise APIFetchError(
+                            f"status={resp.status}, body={body[:500]}",
+                            source="taostats",
+                            status_code=resp.status,
+                        )
 
-                data = await resp.json()
-                results = data.get("results", [])
+                    data = await resp.json()
+                    results = data.get("results", [])
 
-                for subnet in results:
-                    netuid = str(subnet.get("netuid", ""))
-                    if not netuid or netuid == "0":  # Skip root network
-                        continue
+                    for subnet in results:
+                        netuid = str(subnet.get("netuid", ""))
+                        if not netuid or netuid == "0":  # Skip root network
+                            continue
 
-                    subnets[netuid] = _parse_subnet_data(subnet)
+                        subnets[netuid] = _parse_subnet_data(subnet)
 
-    except APIFetchError:
-        raise
-    except Exception as e:
-        raise APIFetchError(f"Unexpected error: {e}", source="taostats") from e
+            if not subnets:
+                raise APIFetchError("API returned no subnet data", source="taostats")
 
-    if not subnets:
-        raise APIFetchError("API returned no subnet data", source="taostats")
+            return {"subnets": subnets}
 
-    return {"subnets": subnets}
+        except APIFetchError:
+            raise
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(1.0 + attempt * 0.5)
+                continue
+            raise APIFetchError(f"Unexpected error: {e}", source="taostats") from last_error
 
 
 async def fetch_single_subnet_data(subnet_id: str) -> Dict[str, Any]:

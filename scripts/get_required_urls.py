@@ -41,7 +41,8 @@ def _extract_urls_from_validation_info(plugin_name: str, validation_info: Dict[s
             seen.add(url)
             urls.append(url)
 
-    if not validation_info:
+    # Allow empty dict so plugin-only URL logic (e.g. hackernews) still runs
+    if validation_info is None:
         return urls
 
     info = validation_info
@@ -86,6 +87,32 @@ def _extract_urls_from_validation_info(plugin_name: str, validation_info: Dict[s
                 from urllib.parse import quote
                 add(f"https://wttr.in/{quote(str(info[key]).replace(' ', '+'))}")
 
+    elif plugin_name == "openmeteo":
+        def _openmeteo_docs_url(coord_key: str) -> str:
+            if not coord_key:
+                return ""
+            parts = str(coord_key).strip().split(",")
+            if len(parts) != 2:
+                return ""
+            try:
+                lat, lon = float(parts[0]), float(parts[1])
+                return f"https://open-meteo.com/en/docs?latitude={lat}&longitude={lon}"
+            except ValueError:
+                return ""
+        if "coord_key" in info:
+            u = _openmeteo_docs_url(info["coord_key"])
+            if u:
+                add(u)
+        elif "city1_coord_key" in info and "city2_coord_key" in info:
+            u1 = _openmeteo_docs_url(info["city1_coord_key"])
+            u2 = _openmeteo_docs_url(info["city2_coord_key"])
+            if u1:
+                add(u1)
+            if u2:
+                add(u2)
+        else:
+            add("https://open-meteo.com/en/docs")
+
     elif plugin_name == "openlibrary":
         # book_stats: search by book title
         if "search_query" in info:
@@ -96,6 +123,16 @@ def _extract_urls_from_validation_info(plugin_name: str, validation_info: Dict[s
             subj = str(info["subject"]).replace("_", "+")
             add(f"https://openlibrary.org/search?q={subj}&sort=editions")
         add("https://openlibrary.org/")
+
+    elif plugin_name == "hackernews":
+        # category_comparison needs both category pages (Ask HN, Show HN)
+        cat1 = info.get("category1_slug")
+        cat2 = info.get("category2_slug")
+        if cat1 and cat2:
+            add(f"https://news.ycombinator.com/{cat1}")
+            add(f"https://news.ycombinator.com/{cat2}")
+        else:
+            add("https://news.ycombinator.com/")
 
     elif plugin_name == "hybrid":
         # Crypto (CoinGecko): level1_asset, level2_asset, condition_asset only

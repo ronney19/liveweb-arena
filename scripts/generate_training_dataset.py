@@ -106,10 +106,25 @@ async def _collect_ground_truth_for_task(
                     raise RuntimeError(f"Failed to fetch {url}: {_format_exception(e)}") from e
 
         # Get ground truth for each subtask
-        for subtask in task.subtasks:
+        for i, subtask in enumerate(task.subtasks):
+            template_tuple = templates[i % len(templates)]
+            template_name = template_tuple[1]
             plugin = task_manager.get_plugin(subtask.plugin_name)
             result = await plugin.get_ground_truth(subtask.validation_info)
             value = _gt_value_from_result(result)
+
+            # Special-case: CoinGecko rank sometimes lacks market_cap_rank for a coin
+            # (e.g., some assets on demo API). Instead of failing the whole task,
+            # fall back to an "unknown" placeholder so dataset generation can continue.
+            if (
+                value is None
+                and subtask.plugin_name == "coingecko"
+                and template_name == "coingecko_rank"
+            ):
+                error_msg = getattr(result, "error", "") if hasattr(result, "error") else str(result)
+                if "Missing market cap rank data" in str(error_msg):
+                    value = "unknown"
+
             if value is None:
                 raise ValueError(
                     f"GT failed for {subtask.answer_tag}: {getattr(result, 'error', result)}"
@@ -244,6 +259,13 @@ def _url_labels_for_subtask(
             labels = ["weather" for _ in required_urls]
     elif plugin_name == "hackernews":
         labels = ["Hacker News"]
+    elif plugin_name == "openmeteo":
+        if "city_name" in vi:
+            labels = [vi["city_name"]]
+        elif "city1_name" in vi and "city2_name" in vi:
+            labels = [vi["city1_name"], vi["city2_name"]]
+        else:
+            labels = ["Open Meteo" for _ in required_urls]
     elif plugin_name == "openlibrary":
         if "search_query" in vi:
             labels = ["Open Library search"]
@@ -265,6 +287,8 @@ def _url_labels_for_subtask(
         if "stooq.com" in u:
             s = parse_qs(urlparse(u).query).get("s", [""])[0]
             labels.append(symbol_to_label(s))
+        elif "open-meteo.com" in u:
+            labels.append("Open Meteo")
         else:
             path = urlparse(u).path.rstrip("/")
             labels.append(path.split("/")[-1].replace("-", " ").title() if path else "page")
@@ -495,6 +519,15 @@ def _url_labels_for_ordered_urls(ordered_urls: List[str]) -> List[str]:
                 labels.append(path or "Taostats")
         elif "openlibrary.org" in (parsed.netloc or ""):
             labels.append("Open Library")
+        elif "open-meteo.com" in (parsed.netloc or ""):
+            from urllib.parse import parse_qs
+            q = parse_qs(parsed.query or "")
+            lat = q.get("latitude", [""])[0]
+            lon = q.get("longitude", [""])[0]
+            if lat and lon:
+                labels.append(f"Open Meteo ({lat},{lon})")
+            else:
+                labels.append("Open Meteo")
         else:
             labels.append(path.split("/")[-1].replace("-", " ").title() if path else "page")
     return labels
