@@ -140,6 +140,12 @@ class TaskRegistry:
         81: ("openlibrary", "openlibrary_subject_multi_condition"),
         82: ("openlibrary", "openlibrary_book_comparison"),
         84: ("openlibrary", "openlibrary_author_editions"),
+
+        # Open Meteo templates
+        85: ("openmeteo", "openmeteo_current"),
+        86: ("openmeteo", "openmeteo_comparison"),
+        87: ("openmeteo", "openmeteo_hourly_extrema"),
+        88: ("openmeteo", "openmeteo_forecast_trend"),
     }
 
     # Template versions - each version's combinations come AFTER all previous versions
@@ -164,6 +170,8 @@ class TaskRegistry:
         [80, 81],
         # Version 4: Additional Open Library templates
         [82, 84],
+        # Version 5: Open Meteo templates
+        [85, 86, 87, 88],
     ]
 
     # Combination registry: list of template ID tuples

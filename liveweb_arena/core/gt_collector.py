@@ -404,6 +404,15 @@ class GTCollector:
                 self._collected_api_data[f"user:{username}"] = api_data
                 return f"user[{username}]"
 
+        elif "open-meteo.com" in url_lower:
+            # Each page visit has a unique location via _location_key
+            loc_key = api_data.get("_location_key")
+            if loc_key and "current_weather" in api_data:
+                store_key = f"openmeteo:{loc_key}"
+                self._collected_api_data[store_key] = api_data
+                temp = api_data["current_weather"].get("temperature", "?")
+                return f"weather[{loc_key}] {temp}°C"
+
         elif "openlibrary.org" in url_lower:
             if "works" in api_data and isinstance(api_data["works"], dict):
                 # Search or subject page: store under URL key
