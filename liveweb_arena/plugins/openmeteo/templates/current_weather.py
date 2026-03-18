@@ -1,8 +1,8 @@
-"""Current weather template for Open Meteo - EASY DIFFICULTY
+"""Current weather template for Open Meteo - EASY DIFFICULTY.
 
 Asks for a single current weather metric (temperature or wind speed)
-for a given city. The agent navigates to the Open Meteo docs page
-with pre-filled coordinates and reads the current value.
+for a given city. The agent starts on the generic Open-Meteo docs page,
+searches for the location, and then reads the current value.
 
 Dynamic data: current weather updates every 15 minutes.
 Large entity pool: 40 cities x 2 metrics = 80 question variants per pattern.
@@ -17,8 +17,9 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, TriggerConfig, GroundTruthResult,
 )
-from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
+from liveweb_arena.core.gt_collector import GTSourceType
 
+from .common import DOCS_HOME_URL, get_collected_location_data
 from .variables import CITIES, CurrentMetric
 
 
@@ -39,10 +40,10 @@ PATTERNS = {
 @register_template("openmeteo_current")
 class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
     """
-    EASY: Navigate to Open Meteo, read a single current metric.
+    EASY: Use location search, then read a single current metric.
 
     RL value:
-    - Form interaction: must navigate an interactive docs page
+    - Form interaction: must search/select a location in the docs UI
     - Dynamic data: weather changes every 15 minutes
     - 40 cities x 2 metrics x 3 patterns = 240 question variants
     """
@@ -64,7 +65,7 @@ class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
 
         return GeneratedQuestion(
             question_text=question_text,
-            start_url=city.docs_url(),
+            start_url=DOCS_HOME_URL,
             variables={"city": city.name, "metric": metric.name},
             validation_info={
                 "city_name": city.name,
@@ -74,7 +75,7 @@ class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
                 "unit": metric.unit,
             },
             template_name=self.name,
-            expected_steps=5,
+            expected_steps=6,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
@@ -87,6 +88,7 @@ class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
 - Score 1.0: Value within ±2{unit} of correct answer
 - Score 0.5: Value within ±5{unit}
 - Score 0.0: Wrong value or no answer
+- The answer should reflect the city selected on Open-Meteo, not a guessed climatology
 - Data source: Open-Meteo weather service (open-meteo.com)"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
@@ -95,20 +97,9 @@ class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
         unit = validation_info.get("unit", "")
         city_name = validation_info.get("city_name", "")
 
-        gt_collector = get_current_gt_collector()
-        if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector")
-
-        collected = gt_collector.get_collected_api_data()
-
-        # Look for data keyed by coordinate key (set by gt_collector merge)
-        data = collected.get(f"openmeteo:{coord_key}")
-        if data is None:
-            keys = [k for k in collected if k.startswith("openmeteo:")][:5]
-            return GroundTruthResult.not_collected(
-                f"Agent did not visit Open Meteo page for '{city_name}'. "
-                f"Collected keys: {keys}"
-            )
+        data, failure = get_collected_location_data(coord_key, city_name)
+        if failure is not None:
+            return failure
 
         current = data.get("current_weather")
         if not current:

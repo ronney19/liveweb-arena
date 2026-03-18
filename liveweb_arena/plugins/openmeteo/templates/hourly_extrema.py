@@ -1,7 +1,8 @@
-"""Hourly extrema template for Open Meteo - MEDIUM DIFFICULTY
+"""Hourly extrema template for Open Meteo - MEDIUM DIFFICULTY.
 
 Asks for the highest or lowest hourly temperature today in a given city.
-The agent must scan hourly forecast data and find the extreme value.
+The agent starts on the generic docs page, finds the city, then scans the
+hourly forecast series to locate the extreme value.
 
 Dynamic data: hourly forecasts update continuously.
 Time-sensitive: asks about "today" which changes daily.
@@ -17,21 +18,22 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, TriggerConfig, GroundTruthResult,
 )
-from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
+from liveweb_arena.core.gt_collector import GTSourceType
 
+from .common import DOCS_HOME_URL, get_collected_location_data, get_today_hourly_temperatures
 from .variables import CITIES
 
 
 PATTERNS_HIGH = [
-    "What will be the highest temperature today in {city} according to Open-Meteo?",
-    "On Open-Meteo, what is the maximum temperature forecast for {city} today?",
-    "Using Open-Meteo, find today's peak temperature in {city}.",
+    "What is the highest hourly temperature forecast for {city} today on Open-Meteo?",
+    "Using Open-Meteo, find today's peak hourly temperature in {city}.",
+    "On Open-Meteo, what is the warmest hourly temperature expected in {city} today?",
 ]
 
 PATTERNS_LOW = [
-    "What will be the lowest temperature today in {city} according to Open-Meteo?",
-    "On Open-Meteo, what is the minimum temperature forecast for {city} today?",
-    "Using Open-Meteo, find today's lowest temperature in {city}.",
+    "What is the lowest hourly temperature forecast for {city} today on Open-Meteo?",
+    "Using Open-Meteo, find today's lowest hourly temperature in {city}.",
+    "On Open-Meteo, what is the coolest hourly temperature expected in {city} today?",
 ]
 
 
@@ -60,7 +62,7 @@ class OpenMeteoHourlyExtremaTemplate(QuestionTemplate):
 
         return GeneratedQuestion(
             question_text=question_text,
-            start_url=city.docs_url(),
+            start_url=DOCS_HOME_URL,
             variables={"city": city.name, "is_max": is_max},
             validation_info={
                 "city_name": city.name,
@@ -68,7 +70,7 @@ class OpenMeteoHourlyExtremaTemplate(QuestionTemplate):
                 "is_max": is_max,
             },
             template_name=self.name,
-            expected_steps=5,
+            expected_steps=7,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
@@ -77,44 +79,26 @@ class OpenMeteoHourlyExtremaTemplate(QuestionTemplate):
         extrema = "maximum (highest)" if is_max else "minimum (lowest)"
         return f"""Task-Specific Rules (Open Meteo Hourly Extrema):
 - City: {city}
-- Looking for: {extrema} temperature today
+- Looking for: {extrema} hourly temperature today
 - Score 1.0: Value within ±1°C of correct answer
 - Score 0.5: Value within ±3°C
 - Score 0.0: Wrong value or no answer
-- Use the daily max/min from Open-Meteo forecast"""
+- Use the hourly forecast for today's local date, not the daily summary"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
         coord_key = validation_info.get("coord_key", "")
         is_max = validation_info.get("is_max", True)
         city_name = validation_info.get("city_name", "")
 
-        gt_collector = get_current_gt_collector()
-        if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector")
+        data, failure = get_collected_location_data(coord_key, city_name)
+        if failure is not None:
+            return failure
 
-        collected = gt_collector.get_collected_api_data()
-        data = collected.get(f"openmeteo:{coord_key}")
+        temps, temp_failure = get_today_hourly_temperatures(data)
+        if temp_failure is not None:
+            return temp_failure
 
-        if data is None:
-            return GroundTruthResult.not_collected(
-                f"Agent did not visit Open Meteo page for '{city_name}'"
-            )
-
-        daily = data.get("daily")
-        if not daily:
-            return GroundTruthResult.fail("No daily data in API response")
-
-        if is_max:
-            temps = daily.get("temperature_2m_max")
-            if not temps:
-                return GroundTruthResult.fail("No temperature_2m_max in daily data")
-            value = temps[0]  # Today is index 0
-        else:
-            temps = daily.get("temperature_2m_min")
-            if not temps:
-                return GroundTruthResult.fail("No temperature_2m_min in daily data")
-            value = temps[0]
-
+        value = max(temps) if is_max else min(temps)
         return GroundTruthResult.ok(f"{value}°C")
 
     async def validate_answer(

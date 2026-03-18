@@ -1,10 +1,12 @@
 """Weather comparison template for Open Meteo - HARD DIFFICULTY
 
-Compares current temperature between two cities in different climate zones.
-Requires the agent to visit two separate pages and compare values.
+Computes temperature difference between two cities in different climate zones.
+Requires the agent to visit two separate pages, read both temperatures,
+and compute the numeric difference.
 
 Dynamic data: temperatures change continuously.
 15 city pairs from different climate zones ensure interesting comparisons.
+Answer is a numeric difference (°C), not a binary choice — random baseline ≈ 0%.
 """
 
 import random
@@ -22,19 +24,20 @@ from .variables import CITY_PAIRS
 
 
 PATTERNS = [
-    "Which city is warmer right now according to Open-Meteo, {city1} or {city2}?",
-    "Using Open-Meteo, compare the current temperature in {city1} and {city2}. Which is warmer?",
-    "On Open-Meteo, is it hotter in {city1} or {city2} right now?",
-    "Between {city1} and {city2}, which city has the higher temperature according to Open-Meteo?",
+    "Using Open-Meteo, how many degrees warmer is {city1} than {city2} right now? Give the difference in °C.",
+    "On Open-Meteo, what is the temperature difference between {city1} and {city2} right now in °C? Positive means {city1} is warmer.",
+    "According to Open-Meteo, find the current temperatures of {city1} and {city2}, then compute the difference ({city1} minus {city2}) in °C.",
+    "Check the current temperature in {city1} and {city2} on Open-Meteo. What is the difference in degrees Celsius ({city1} minus {city2})?",
 ]
 
 
 @register_template("openmeteo_comparison")
 class OpenMeteoComparisonTemplate(QuestionTemplate):
     """
-    HARD: Compare current temperature between two cities.
+    HARD: Compute temperature difference between two cities.
 
-    Requires visiting two different location pages and comparing values.
+    Requires visiting two different location pages, reading both temperatures,
+    and computing the numeric difference. Answer is a signed number in °C.
     15 city pairs x 4 patterns x 2 orderings = 120 question variants.
     """
 
@@ -77,12 +80,14 @@ class OpenMeteoComparisonTemplate(QuestionTemplate):
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
         city1 = validation_info.get("city1_name", "City1")
         city2 = validation_info.get("city2_name", "City2")
-        return f"""Task-Specific Rules (Open Meteo Weather Comparison):
-- Compare current temperature between {city1} and {city2}
-- Answer must clearly state which city is warmer
-- Score 1.0: Correct city identified
-- Score 0.0: Wrong city or unclear answer
-- Accept formats: "{city1}", "{city1} is warmer", temperature values with comparison"""
+        return f"""Task-Specific Rules (Open Meteo Temperature Difference):
+- Answer is the temperature difference: {city1} minus {city2} in °C
+- Positive means {city1} is warmer, negative means {city2} is warmer
+- Score 1.0: Difference within ±2°C of ground truth
+- Score 0.5: Difference within ±5°C of ground truth
+- Score 0.0: Difference off by more than 5°C, or wrong sign, or no numeric answer
+- Accept formats: "5.2", "5.2°C", "-3.1°C", "+5.2"
+- Do NOT accept answers that only name a city without the numeric difference"""
 
     async def get_ground_truth(self, validation_info: Dict[str, Any]) -> GroundTruthResult:
         city1_name = validation_info.get("city1_name", "")
@@ -117,14 +122,9 @@ class OpenMeteoComparisonTemplate(QuestionTemplate):
 
         temp1 = float(cw1["temperature"])
         temp2 = float(cw2["temperature"])
+        diff = round(temp1 - temp2, 1)
 
-        if temp1 > temp2:
-            return GroundTruthResult.ok(city1_name)
-        elif temp2 > temp1:
-            return GroundTruthResult.ok(city2_name)
-        else:
-            # Deterministic tie-break: alphabetically first city
-            return GroundTruthResult.ok(min(city1_name, city2_name))
+        return GroundTruthResult.ok(f"{diff}°C")
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]

@@ -1,7 +1,8 @@
-"""Forecast trend template for Open Meteo - MEDIUM DIFFICULTY
+"""Forecast trend template for Open Meteo - MEDIUM DIFFICULTY.
 
 Asks whether tomorrow will be warmer or colder than today in a given city.
-Requires comparing daily max temperatures across two forecast days.
+The agent starts on the generic docs page, finds the location, then compares
+the next two daily high values.
 
 Dynamic data: forecasts update continuously.
 Time-sensitive: "today" and "tomorrow" change daily.
@@ -17,8 +18,9 @@ from liveweb_arena.core.validators.base import (
 from liveweb_arena.core.ground_truth_trigger import (
     UrlPatternTrigger, TriggerConfig, GroundTruthResult,
 )
-from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
+from liveweb_arena.core.gt_collector import GTSourceType
 
+from .common import DOCS_HOME_URL, get_collected_location_data
 from .variables import CITIES
 
 
@@ -51,14 +53,14 @@ class OpenMeteoForecastTrendTemplate(QuestionTemplate):
 
         return GeneratedQuestion(
             question_text=question_text,
-            start_url=city.docs_url(),
+            start_url=DOCS_HOME_URL,
             variables={"city": city.name},
             validation_info={
                 "city_name": city.name,
                 "coord_key": city.coord_key,
             },
             template_name=self.name,
-            expected_steps=5,
+            expected_steps=7,
         )
 
     def get_validation_rules(self, validation_info: Dict[str, Any]) -> str:
@@ -75,17 +77,9 @@ class OpenMeteoForecastTrendTemplate(QuestionTemplate):
         coord_key = validation_info.get("coord_key", "")
         city_name = validation_info.get("city_name", "")
 
-        gt_collector = get_current_gt_collector()
-        if gt_collector is None:
-            return GroundTruthResult.fail("No GT collector")
-
-        collected = gt_collector.get_collected_api_data()
-        data = collected.get(f"openmeteo:{coord_key}")
-
-        if data is None:
-            return GroundTruthResult.not_collected(
-                f"Agent did not visit Open Meteo page for '{city_name}'"
-            )
+        data, failure = get_collected_location_data(coord_key, city_name)
+        if failure is not None:
+            return failure
 
         daily = data.get("daily")
         if not daily:
@@ -103,14 +97,13 @@ class OpenMeteoForecastTrendTemplate(QuestionTemplate):
             return GroundTruthResult.ok(
                 f"Warmer by {abs(diff):.1f}°C (today: {today_max}°C, tomorrow: {tomorrow_max}°C)"
             )
-        elif diff < 0:
+        if diff < 0:
             return GroundTruthResult.ok(
                 f"Colder by {abs(diff):.1f}°C (today: {today_max}°C, tomorrow: {tomorrow_max}°C)"
             )
-        else:
-            return GroundTruthResult.ok(
-                f"Same temperature ({today_max}°C both days)"
-            )
+        return GroundTruthResult.ok(
+            f"Same temperature ({today_max}°C both days)"
+        )
 
     async def validate_answer(
         self, answer: str, validation_info: Dict[str, Any]
