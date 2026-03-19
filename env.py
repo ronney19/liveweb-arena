@@ -543,11 +543,23 @@ class Actor:
                     subtasks_to_validate.append(subtask)
 
             # Use LLM to validate answers with available GT
+            # Validator can use a separate API key/base_url to avoid
+            # routing validation calls through the miner's endpoint.
+            validator_api_key = os.getenv("VALIDATOR_API_KEY")
+            validator_base_url = os.getenv("VALIDATOR_BASE_URL")
+            if validator_api_key:
+                validator_client = LLMClient(
+                    base_url=validator_base_url or base_url,
+                    api_key=validator_api_key,
+                )
+            else:
+                validator_client = llm_client
+
             answer_validations = pre_failed_validations.copy()
 
             if subtasks_to_validate:
                 llm_validations = await validate_answers_with_llm(
-                    llm_client=llm_client,
+                    llm_client=validator_client,
                     subtasks=subtasks_to_validate,
                     answers=parsed_answers,
                     ground_truths=ground_truths,
