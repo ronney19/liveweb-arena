@@ -16,13 +16,14 @@ navigation is always https://taostats.io so the agent visits the site before sub
 Usage:
     python scripts/generate_training_dataset.py --task-list path/to/task_list.json --output dataset.json
     python scripts/generate_training_dataset.py --task-list task_list.json --output dataset.json --debug
-    # Shorter / legacy-style rows:
-    python scripts/generate_training_dataset.py -i task_list.json -o dataset.json --minimal-obs --no-wait-steps
+    # Minimal observations only:
+    python scripts/generate_training_dataset.py -i task_list.json -o dataset.json --minimal-obs
 
 Input: JSON array of {"task_id": int, "seed": int}
 Output (when --output FILE is set):
   - FILE: per-subtask dataset (one row per subtask: task_id, seed, conversation, subtask_index, answer_tag)
   - FILE_per_task.json: per-task dataset (one row per task: task_id, seed, conversation, num_subtasks, answers)
+  - FILE_failed.json: only if any runs fail — array of {task_id, seed, error} (override with --failed-output)
 Example: task_id 6803969 with 4 subtasks produces 4 per-subtask entries and 1 per-task entry.
 
 Note: Some (task_id, seed) pairs may fail if GT collection does not cover all
@@ -73,6 +74,57 @@ def _gt_value_from_result(result: Any) -> Optional[str]:
     return str(result)
 
 
+def _canonical_visit_url(url: str) -> str:
+    """
+    Normalize URLs that denote the same resource so we do not visit twice.
+
+    Taostats homepage variants (https://taostats.io, …/, www) -> https://taostats.io
+    """
+    u = (url or "").strip()
+    if not u:
+        return u
+    from urllib.parse import urlparse
+
+    p = urlparse(u)
+    netloc = (p.netloc or "").lower()
+    path = (p.path or "").rstrip("/")
+    if netloc in ("taostats.io", "www.taostats.io") and path == "":
+        return "https://taostats.io"
+    return u
+
+
+def _dedupe_urls_canonical(urls: List[str]) -> List[str]:
+    """Preserve order; drop URLs whose canonical form was already seen."""
+    out: List[str] = []
+    seen: set = set()
+    for u in urls:
+        c = _canonical_visit_url(u)
+        if c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
+
+
+def _dedupe_urls_and_labels(
+    urls: List[str],
+    labels: Optional[List[str]] = None,
+) -> tuple:
+    """Canonical dedupe; keep the first label for each canonical URL."""
+    labs = list(labels or [])
+    out_u: List[str] = []
+    out_l: List[str] = []
+    seen: set = set()
+    for i, u in enumerate(urls):
+        c = _canonical_visit_url(u)
+        if c in seen:
+            continue
+        seen.add(c)
+        out_u.append(c)
+        out_l.append(labs[i] if i < len(labs) else "")
+    return out_u, out_l
+
+
 async def _collect_ground_truth_for_task(
     task_manager: TaskManager,
     task: Any,
@@ -89,6 +141,7 @@ async def _collect_ground_truth_for_task(
     answers: Dict[str, Optional[str]] = {}
     ordered_urls: List[str] = []  # dedupe while preserving order
     url_to_api: Dict[str, Any] = {}
+    seen_canonical: set = set()
 
     try:
         # Visit all required URLs per subtask and merge into collector.
@@ -102,13 +155,16 @@ async def _collect_ground_truth_for_task(
             plugin = task_manager.get_plugin(plugin_name)
             urls = _required_urls_for_gt(plugin_name, template_name, subtask.validation_info)
             for url in urls:
-                if url not in ordered_urls:
-                    ordered_urls.append(url)
+                c = _canonical_visit_url(url)
+                if c in seen_canonical:
+                    continue
+                seen_canonical.add(c)
+                ordered_urls.append(c)
                 try:
-                    api_data = await plugin.fetch_api_data(url)
+                    api_data = await plugin.fetch_api_data(c)
                     if api_data:
-                        url_to_api[url] = api_data
-                        await collector.on_page_visit(url, "", api_data=api_data)
+                        url_to_api[c] = api_data
+                        await collector.on_page_visit(c, "", api_data=api_data)
                 except Exception as e:
                     set_current_gt_collector(None)
                     collector.cleanup()
@@ -180,13 +236,6 @@ def _build_stop_action_raw_response(answers: Dict[str, str], reasoning: str = ""
             },
         }
     }
-    raw = json.dumps(payload, ensure_ascii=False)
-    return _wrap_with_reasoning(raw, reasoning)
-
-
-def _build_wait_action_raw_response(seconds: int, reasoning: str = "") -> str:
-    """Build assistant raw_response for a wait action (optional <think> block)."""
-    payload = {"action": {"type": "wait", "params": {"seconds": seconds}}}
     raw = json.dumps(payload, ensure_ascii=False)
     return _wrap_with_reasoning(raw, reasoning)
 
@@ -404,16 +453,18 @@ def _ensure_taostats_base_url(
     """
     For taostats plugin, prepend https://taostats.io so the conversation
     navigates to the site first, then to subnet pages. Returns (urls, labels).
+    Merges https://taostats.io and https://taostats.io/ so the homepage is not visited twice.
     """
     if plugin_name != "taostats" or not required_urls:
         return required_urls, url_labels
-    first = required_urls[0].rstrip("/")
-    if first == "https://taostats.io" or first == "https://www.taostats.io":
-        return required_urls, url_labels
-    return (
-        ["https://taostats.io"] + list(required_urls),
-        ["Taostats"] + list(url_labels),
-    )
+    first_c = _canonical_visit_url(required_urls[0])
+    if first_c == "https://taostats.io":
+        return _dedupe_urls_and_labels(required_urls, url_labels)
+    merged_u = ["https://taostats.io"] + list(required_urls)
+    merged_l = ["Taostats"] + list(url_labels)
+    while len(merged_l) < len(merged_u):
+        merged_l.append("")
+    return _dedupe_urls_and_labels(merged_u, merged_l)
 
 
 def _data_source_phrase(task: Any, first_url: str = "") -> str:
@@ -468,12 +519,57 @@ def _truncate_reasoning_text(s: str, max_len: int) -> str:
     return s[: max_len - 20].rstrip() + "\n... (truncated)"
 
 
-def _format_api_extract_for_reasoning(url: str, api_data: Any, max_len: int = 420) -> str:
+def _taostats_detail_netuid_from_url(url: str) -> Optional[str]:
+    """If URL is .../subnets/<n>, return netuid string; else None (listing / home)."""
+    from urllib.parse import urlparse
+
+    path = (urlparse(url).path or "").strip("/")
+    segs = path.split("/")
+    if len(segs) >= 2 and segs[0] == "subnets" and segs[1].isdigit():
+        return segs[1]
+    return None
+
+
+def _taostats_focus_netuids_from_urls(urls: List[str]) -> List[str]:
+    """Netuids from all /subnets/<n> URLs in this trajectory (deduped, order preserved)."""
+    out: List[str] = []
+    for u in urls:
+        n = _taostats_detail_netuid_from_url(u)
+        if not n:
+            continue
+        try:
+            ns = str(int(n))
+        except ValueError:
+            ns = str(n)
+        if ns not in out:
+            out.append(ns)
+    return out
+
+
+def _normalize_api_data_for_reasoning(api_data: Any) -> Any:
+    """Parse JSON strings so we never fall back to str(huge dict)."""
+    if isinstance(api_data, str):
+        s = api_data.strip()
+        if s.startswith("{") or s.startswith("["):
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                return api_data
+    return api_data
+
+
+def _format_api_extract_for_reasoning(
+    url: str,
+    api_data: Any,
+    max_len: int = 420,
+    focus_netuids: Optional[List[str]] = None,
+) -> str:
     """
     Short natural-language summary of API payload for assistant reasoning (not full JSON).
     """
     if api_data is None:
         return ""
+    api_data = _normalize_api_data_for_reasoning(api_data)
     from urllib.parse import urlparse
 
     host = (urlparse(url).netloc or "").lower()
@@ -519,20 +615,66 @@ def _format_api_extract_for_reasoning(url: str, api_data: Any, max_len: int = 42
                 if line:
                     return out("coingecko: " + ", ".join(line))
 
-            # Taostats (subnet doc or subnets map)
+            # Taostats: detail page is a flat dict; list/home is {"subnets": {...}}.
             if "taostats" in host:
-                if "netuid" in api_data or "name" in api_data:
+                subs = api_data.get("subnets") if isinstance(api_data.get("subnets"), dict) else None
+                is_roster = isinstance(subs, dict) and subs and set(api_data.keys()) <= {"subnets"}
+                # Flat subnet detail (fetch_single_subnet_data) — not the full roster object
+                if not is_roster and api_data.get("netuid") is not None:
                     keys = ("netuid", "name", "price", "market_cap", "emission", "volume_24h")
                     line = [f"{k}={api_data.get(k)}" for k in keys if api_data.get(k) is not None]
                     if line:
-                        return out("subnet: " + ", ".join(line))
-                subs = api_data.get("subnets")
+                        return out("subnet detail: " + ", ".join(line))
                 if isinstance(subs, dict) and subs:
-                    first_k = next(iter(subs))
-                    one = subs[first_k]
-                    if isinstance(one, dict):
-                        line = [f"netuid={one.get('netuid')}", f"name={one.get('name')}", f"price={one.get('price')}"]
-                        return out(f"subnets sample (netuid {first_k}): " + ", ".join(str(x) for x in line if x.split("=", 1)[-1] != "None"))
+                    want = _taostats_detail_netuid_from_url(url)
+                    one: Any = None
+                    picked: Optional[str] = None
+                    if want is not None:
+                        one = subs.get(want) or subs.get(str(want))
+                        if one is None:
+                            for k, v in subs.items():
+                                if isinstance(v, dict) and str(v.get("netuid")) == str(want):
+                                    one, picked = v, str(k)
+                                    break
+                        else:
+                            picked = want
+                        if isinstance(one, dict):
+                            line = [
+                                f"netuid={one.get('netuid')}",
+                                f"name={one.get('name')}",
+                                f"price={one.get('price')}",
+                            ]
+                            return out(
+                                f"subnet {picked or one.get('netuid')}: "
+                                + ", ".join(
+                                    str(x)
+                                    for x in line
+                                    if x.split("=", 1)[-1] not in ("None", "")
+                                )
+                            )
+                        return out(
+                            f"subnet URL netuid={want}: no row in roster "
+                            f"({len(subs)} subnets in snapshot — see tree)"
+                        )
+                    # Listing / home — never sample netuid 1/Apex; name task subnets from planned URLs
+                    focus = list(focus_netuids or [])
+                    if focus:
+                        parts: List[str] = []
+                        for nid in focus[:16]:
+                            row = subs.get(nid) or subs.get(str(nid))
+                            if isinstance(row, dict):
+                                nm = row.get("name", "?")
+                                parts.append(
+                                    f"SN{nid} {nm}: price={row.get('price')}, tao_in={row.get('tao_in')}"
+                                )
+                            else:
+                                parts.append(f"SN{nid}: not in loaded roster")
+                        return out("task-relevant subnets: " + "; ".join(parts))
+                    return out(
+                        f"subnets roster: {len(subs)} subnets (listing — see tree or "
+                        f"detail URLs; no arbitrary subnet sample in reasoning)"
+                    )
+                return out("taostats: empty or unknown snapshot shape (see accessibility tree).")
 
             # Stooq-style (often wrapped or flat)
             if "stooq" in host:
@@ -583,7 +725,10 @@ def _format_api_extract_for_reasoning(url: str, api_data: Any, max_len: int = 42
         if isinstance(api_data, list):
             return out(f"array length={len(api_data)}")
     except Exception:
-        pass
+        if "taostats" in host:
+            return out("taostats: could not summarize snapshot (use accessibility tree).")
+    if "taostats" in host:
+        return out("taostats: use accessibility tree for this page (avoid inlining full roster).")
     return out(str(api_data)[:max_len])
 
 
@@ -636,7 +781,7 @@ def _build_answer_tags_per_url_full_task(task: Any, templates: List[tuple]) -> D
     return m
 
 
-def _digest_and_wait_reasoning_parts(
+def _digest_reasoning_parts(
     url: str,
     label: Optional[str],
     snap: Any,
@@ -645,17 +790,19 @@ def _digest_and_wait_reasoning_parts(
     *,
     page_index_1based: int,
     num_pages: int,
+    trajectory_urls: Optional[List[str]] = None,
 ) -> tuple:
     """
-    Returns (wait_extra_line, digest_body) for assistant </think> / JSON turns.
+    Returns (snapshot_highlights_line, digest_body) for assistant reasoning on goto/stop.
     """
-    api_bits = _format_api_extract_for_reasoning(url, snap)
-    wait_extra = ""
+    focus = _taostats_focus_netuids_from_urls(trajectory_urls or [])
+    api_bits = _format_api_extract_for_reasoning(url, snap, focus_netuids=focus)
+    highlights = ""
     if api_bits:
-        wait_extra = f"Notable values in this snapshot: {api_bits}"
+        highlights = f"Notable values in this snapshot: {api_bits}"
 
     digest_lines: List[str] = [
-        f"Digest ({page_index_1based}/{num_pages}) — {label or url}:",
+        f"{label or url}:",
     ]
     if api_bits:
         digest_lines.append(f"  • From API/tree: {api_bits}")
@@ -672,7 +819,7 @@ def _digest_and_wait_reasoning_parts(
             "  • Parsed this page; no compact field summary available (see full tree)."
         )
     digest_body = "\n".join(digest_lines)
-    return wait_extra, digest_body
+    return highlights, digest_body
 
 
 def _build_conversation(
@@ -683,7 +830,6 @@ def _build_conversation(
     url_to_api: Optional[Dict[str, Any]] = None,
     *,
     rich_observations: bool = True,
-    intermediate_wait_steps: bool = True,
     planning_intent: Optional[str] = None,
     stop_answer_summary: Optional[str] = None,
     answer_tags_per_url: Optional[Dict[str, List[str]]] = None,
@@ -694,8 +840,7 @@ def _build_conversation(
     Uses the same API payloads as GT collection (url_to_api) inside the tree when
     rich_observations=True (eval-style / new_dataset.json).
 
-    When intermediate_wait_steps=True, after each successful navigation the agent
-    waits and reasons over the tree before the next goto, adding more steps.
+    One assistant turn per landed page: observation + digest + goto or stop (no wait actions).
 
     planning_intent / stop_answer_summary override the default single-subtask
     phrasing for full-composite-task conversations.
@@ -789,225 +934,93 @@ def _build_conversation(
         )
         return conversation
 
-    if intermediate_wait_steps:
-        total_user_steps = 2 * n + 1
-        # --- First user turn: about:blank -> goto first URL (wait-path only) ---
-        blank_tree = (
-            'document\n  web area "about:blank"'
-            if not rich_observations
-            else (
-                "document\n  heading \"Start\"\n  StaticText \"No page loaded yet. "
-                "Next action should navigate to the first required URL for this task.\""
-            )
-        )
-        obs0 = BrowserObservation(url="about:blank", title="", accessibility_tree=blank_tree)
-        label0 = labels[0] if labels else None
-        u0 = required_urls[0]
-        if n > 1:
-            plan = (
-                f"Planning: I must complete: {intent}\n"
-                f"Data source: {data_source}.\n"
-                f"Step 1: Open the first target page"
-                f"{(' (' + str(label0) + ')') if label0 else ''} at the required URL.\n"
-                f"I will read the accessibility tree (API-backed snapshot), note facts, then visit remaining URLs if any."
-            )
-        else:
-            plan = (
-                f"Planning: Single-page task — {intent}\n"
-                f"Data source: {data_source}.\n"
-                f"I will open the required page, read the tree for ground-truth fields, then stop with the answer."
-            )
-        goto0 = _build_goto_action_raw_response(
-            u0,
-            plan + f"\n\nAction: navigate to {u0}.",
-        )
-        _append_pair(obs0, goto0, BrowserAction("goto", {"url": u0}), "goto", 0)
-
-        for i in range(n):
-            ui = required_urls[i]
-            li = labels[i] if i < len(labels) else None
-            snap = url_to_api.get(ui)
-            rich_obs = _observation_for_training_url(ui, snap, rich=rich_observations)
-
-            finalized_here = finalized_at.get(i, [])
-            wait_extra, digest_body = _digest_and_wait_reasoning_parts(
-                ui,
-                li,
-                snap,
-                answers,
-                finalized_here,
-                page_index_1based=i + 1,
-                num_pages=n,
-            )
-            wait_reasoning = (
-                f"Observation pass ({i + 1}/{n}): I'm on the page for "
-                f"{li or ui}.\n"
-                f"I read the Accessibility Tree (structured API snapshot). "
-                f"I extract the fields needed for the task and cross-check units and labels.\n"
-                f"Next: {'continue to the next URL' if i < n - 1 else 'submit the final answer with stop'}."
-            )
-            if wait_extra:
-                wait_reasoning += f"\n{wait_extra}"
-            _append_pair(
-                rich_obs,
-                _build_wait_action_raw_response(1, wait_reasoning),
-                BrowserAction("wait", {"seconds": 1}),
-                "wait",
-                step_idx,
-            )
-
-            digest_reasoning = (
-                f"{digest_body}\n"
-                f"Remaining navigations: {max(0, n - 1 - i)} after this step."
-            )
-            if i < n - 1:
-                nxt = required_urls[i + 1]
-                ln = labels[i + 1] if i + 1 < len(labels) else None
-                goto_reasoning = (
-                    f"{digest_reasoning}\n\n"
-                    f"Planning: Next I need data from "
-                    f"{ln or nxt}.\n"
-                    f"Action: goto {nxt}."
-                )
-                _append_pair(
-                    rich_obs,
-                    _build_goto_action_raw_response(nxt, goto_reasoning),
-                    BrowserAction("goto", {"url": nxt}),
-                    "goto",
-                    step_idx,
-                )
-            else:
-                stop_reasoning = (
-                    f"{digest_reasoning}\n\n"
-                    f"Synthesis: Combined what I need from all visited pages for: {intent}\n"
-                    f"Final answer: {answer_value}.\n"
-                    f"Action: stop with JSON answers."
-                )
-                _append_pair(
-                    rich_obs,
-                    _build_stop_action_raw_response(answers, stop_reasoning),
-                    BrowserAction("stop", {"format": "json", "final": {"answers": answers}}),
-                    "stop",
-                    step_idx,
-                )
-        return conversation
-
-    # --- Legacy: one goto per URL, no wait steps; rich trees after landing ---
     total_user_steps = n + 1
-    trajectory.clear()
-    step_idx = 0
-    blank_tree_legacy = (
+    blank_tree = (
         'document\n  web area "about:blank"'
         if not rich_observations
         else (
             "document\n  heading \"Start\"\n  StaticText \"No page loaded yet. "
-            "Navigate to the first required URL.\""
+            "Next action should navigate to the first required URL for this task.\""
         )
     )
-    obs_blank = BrowserObservation(url="about:blank", title="", accessibility_tree=blank_tree_legacy)
+    obs0 = BrowserObservation(url="about:blank", title="", accessibility_tree=blank_tree)
+    label0 = labels[0] if labels else None
+    u0 = required_urls[0]
+    if n > 1:
+        plan = (
+            f"Planning: I must complete: {intent}\n"
+            f"Data source: {data_source}.\n"
+            f"Step 1: Open the first target page"
+            f"{(' (' + str(label0) + ')') if label0 else ''} at the required URL.\n"
+            f"I will read the accessibility tree (API-backed snapshot), note facts, then visit remaining URLs if any."
+        )
+    else:
+        plan = (
+            f"Planning: Single-page task — {intent}\n"
+            f"Data source: {data_source}.\n"
+            f"I will open the required page, read the tree for ground-truth fields, then stop with the answer."
+        )
+    goto0 = _build_goto_action_raw_response(
+        u0,
+        plan + f"\n\nAction: navigate to {u0}.",
+    )
+    _append_pair(obs0, goto0, BrowserAction("goto", {"url": u0}), "goto", 0)
 
-    for step_index in range(n + 1):
-        current_step = step_index + 1
-        if step_index < n:
-            url = required_urls[step_index]
-            label = labels[step_index] if step_index < len(labels) else None
-            if step_index == 0:
-                obs = obs_blank
-            else:
-                prev = required_urls[step_index - 1]
-                obs = _observation_for_training_url(
-                    prev, url_to_api.get(prev), rich=rich_observations
-                )
-            if step_index == 0:
-                if n > 1:
-                    goto_reasoning = (
-                        f"Planning: {intent}\nSource: {data_source}.\n"
-                        f"First I open{(' ' + str(label)) if label else ''} ({url})."
-                    )
-                else:
-                    goto_reasoning = (
-                        f"Planning: {intent}\nSource: {data_source}.\nNavigate to: {url}"
-                    )
-            else:
-                goto_reasoning = (
-                    f"Planning: Collected previous page; now need "
-                    f"{label or 'next target'}.\nAction: goto {url}."
-                )
-            user_prompt = policy.build_step_prompt(
-                obs, trajectory, current_step, total_user_steps, include_raw_responses=False
+    for i in range(n):
+        ui = required_urls[i]
+        li = labels[i] if i < len(labels) else None
+        snap = url_to_api.get(ui)
+        rich_obs = _observation_for_training_url(ui, snap, rich=rich_observations)
+        finalized_here = finalized_at.get(i, [])
+        highlights, digest_body = _digest_reasoning_parts(
+            ui,
+            li,
+            snap,
+            answers,
+            finalized_here,
+            page_index_1based=i + 1,
+            num_pages=n,
+            trajectory_urls=required_urls,
+        )
+        obs_pass = (
+            f"I read the Accessibility Tree (structured API snapshot) and extract task-relevant fields.\n"
+            f"Next: {'navigate to the next required URL' if i < n - 1 else 'submit answers with stop'}."
+        )
+        if highlights:
+            obs_pass += f"\n{highlights}"
+        digest_reasoning = (
+            f"{digest_body}\n"
+            f"Remaining navigations: {max(0, n - 1 - i)} after this step."
+        )
+        if i < n - 1:
+            nxt = required_urls[i + 1]
+            ln = labels[i + 1] if i + 1 < len(labels) else None
+            full_reasoning = (
+                f"{obs_pass}\n\n{digest_reasoning}\n\n"
+                f"Planning: Next I need data from {ln or nxt}.\n"
+                f"Action: goto {nxt}."
             )
-            conversation.append({
-                "role": "user",
-                "content": user_prompt,
-                "metadata": {"type": "environment", "step": step_index, "url": obs.url},
-            })
-            raw_response = _build_goto_action_raw_response(url, goto_reasoning)
-            trajectory.append(TrajectoryStep(
-                step_num=step_idx,
-                observation=obs,
-                action=BrowserAction("goto", {"url": url}),
-                action_result="Success",
-                prompt=user_prompt,
-                raw_response=raw_response,
-            ))
-            conversation.append({
-                "role": "assistant",
-                "content": raw_response,
-                "metadata": {
-                    "type": "agent_action",
-                    "step": step_index,
-                    "action_type": "goto",
-                    "action_result": "Success",
-                },
-            })
-            step_idx += 1
+            _append_pair(
+                rich_obs,
+                _build_goto_action_raw_response(nxt, full_reasoning),
+                BrowserAction("goto", {"url": nxt}),
+                "goto",
+                step_idx,
+            )
         else:
-            last = required_urls[-1]
-            obs = _observation_for_training_url(last, url_to_api.get(last), rich=rich_observations)
-            user_prompt = policy.build_step_prompt(
-                obs, trajectory, current_step, total_user_steps, include_raw_responses=False
+            full_reasoning = (
+                f"{obs_pass}\n\n{digest_reasoning}\n\n"
+                f"Synthesis: Combined what I need from all visited pages for: {intent}\n"
+                f"Final answer: {answer_value}.\n"
+                f"Action: stop with JSON answers."
             )
-            conversation.append({
-                "role": "user",
-                "content": user_prompt,
-                "metadata": {"type": "environment", "step": step_index, "url": obs.url},
-            })
-            last_idx = n - 1
-            ll = labels[last_idx] if last_idx < len(labels) else None
-            _, digest_last = _digest_and_wait_reasoning_parts(
-                last,
-                ll,
-                url_to_api.get(last),
-                answers,
-                finalized_at.get(last_idx, []),
-                page_index_1based=n,
-                num_pages=n,
+            _append_pair(
+                rich_obs,
+                _build_stop_action_raw_response(answers, full_reasoning),
+                BrowserAction("stop", {"format": "json", "final": {"answers": answers}}),
+                "stop",
+                step_idx,
             )
-            stop_reasoning = (
-                f"{digest_last}\n\n"
-                f"Synthesis: {intent}\n"
-                f"Answer from collected pages: {answer_value}.\n"
-                f"Action: stop."
-            )
-            raw_response = _build_stop_action_raw_response(answers, stop_reasoning)
-            trajectory.append(TrajectoryStep(
-                step_num=step_idx,
-                observation=obs,
-                action=BrowserAction("stop", {"format": "json", "final": {"answers": answers}}),
-                action_result="Task completed",
-                prompt=user_prompt,
-                raw_response=raw_response,
-            ))
-            conversation.append({
-                "role": "assistant",
-                "content": raw_response,
-                "metadata": {
-                    "type": "agent_action",
-                    "step": step_index,
-                    "action_type": "stop",
-                    "action_result": "Task completed",
-                },
-            })
 
     return conversation
 
@@ -1051,7 +1064,6 @@ def _build_full_task_conversation(
     url_to_api: Optional[Dict[str, Any]] = None,
     *,
     rich_observations: bool = True,
-    intermediate_wait_steps: bool = True,
     answer_tags_per_url: Optional[Dict[str, List[str]]] = None,
 ) -> List[dict]:
     """
@@ -1079,9 +1091,9 @@ def _build_full_task_conversation(
         url_labels=labels,
         url_to_api=url_to_api,
         rich_observations=rich_observations,
-        intermediate_wait_steps=intermediate_wait_steps,
         planning_intent=planning,
         stop_answer_summary=_answers_summary_for_reasoning(answers),
+        answer_tags_per_url=answer_tags_per_url,
     )
 
 
@@ -1094,11 +1106,12 @@ def _ensure_taostats_base_url_for_full_task(
         return ordered_urls
     has_taostats = any(st.plugin_name == "taostats" for st in task.subtasks)
     if not has_taostats:
-        return ordered_urls
-    first = ordered_urls[0].rstrip("/")
-    if first == "https://taostats.io" or first == "https://www.taostats.io":
-        return ordered_urls
-    return ["https://taostats.io"] + list(ordered_urls)
+        return _dedupe_urls_canonical(list(ordered_urls))
+    first_c = _canonical_visit_url(ordered_urls[0])
+    if first_c == "https://taostats.io":
+        return _dedupe_urls_canonical(list(ordered_urls))
+    merged = ["https://taostats.io"] + list(ordered_urls)
+    return _dedupe_urls_canonical(merged)
 
 
 async def generate_one(
@@ -1108,7 +1121,6 @@ async def generate_one(
     debug: bool = False,
     *,
     rich_observations: bool = True,
-    intermediate_wait_steps: bool = True,
 ) -> Dict[str, Any]:
     """
     Generate one training example: task_id, seed, conversation (with correct answers).
@@ -1214,7 +1226,6 @@ async def generate_one(
             url_labels=url_labels_i,
             url_to_api=url_to_api,
             rich_observations=rich_observations,
-            intermediate_wait_steps=intermediate_wait_steps,
         )
         entries.append({
             "task_id": task_id,
@@ -1234,7 +1245,6 @@ async def generate_one(
         url_labels=full_labels,
         url_to_api=url_to_api,
         rich_observations=rich_observations,
-        intermediate_wait_steps=intermediate_wait_steps,
         answer_tags_per_url=full_answer_tags,
     )
     per_task_entry = {
@@ -1276,6 +1286,16 @@ async def main():
         help="Output JSON file (default: stdout)",
     )
     parser.add_argument(
+        "--failed-output",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help=(
+            "JSON file listing failed {task_id, seed, error} entries. "
+            "Default when using -o: <output_basename>_failed.json (only written if any failures)."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Print tracebacks on errors",
@@ -1285,12 +1305,6 @@ async def main():
         action="store_true",
         dest="minimal_obs",
         help="Use minimal web-area observations instead of API JSON in Accessibility Tree",
-    )
-    parser.add_argument(
-        "--no-wait-steps",
-        action="store_true",
-        dest="no_wait_steps",
-        help="Omit intermediate wait+digest steps between navigations (shorter trajectories)",
     )
     args = parser.parse_args()
 
@@ -1325,7 +1339,6 @@ async def main():
             task_manager,
             debug=args.debug,
             rich_observations=not args.minimal_obs,
-            intermediate_wait_steps=not args.no_wait_steps,
         )
         results.append(one)
         if one.get("success"):
@@ -1350,6 +1363,15 @@ async def main():
         if r.get("success") and r.get("per_task_entry"):
             dataset_per_task.append(r["per_task_entry"])
 
+    failed_rows = [
+        {
+            "task_id": r["task_id"],
+            "seed": r["seed"],
+        }
+        for r in results
+        if not r.get("success")
+    ]
+
     out_json = json.dumps(dataset, indent=2, ensure_ascii=False, default=str)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
@@ -1364,7 +1386,20 @@ async def main():
         print(f"Wrote {len(dataset_per_task)} per-task examples to {out_per_task}", file=sys.stderr)
     else:
         print(out_json)
-    failed = sum(1 for r in results if not r.get("success"))
+
+    failed_path = args.failed_output
+    if failed_path is None and args.output and failed_rows:
+        failed_path = (os.path.splitext(args.output)[0] or args.output) + "_failed.json"
+    if failed_path:
+        failed_json = json.dumps(failed_rows, indent=2, ensure_ascii=False, default=str)
+        with open(failed_path, "w", encoding="utf-8") as f:
+            f.write(failed_json)
+        print(
+            f"Wrote {len(failed_rows)} failed task(s) to {failed_path}",
+            file=sys.stderr,
+        )
+
+    failed = len(failed_rows)
     if failed:
         print(f"Failed: {failed}/{len(results)}", file=sys.stderr)
         sys.exit(1)

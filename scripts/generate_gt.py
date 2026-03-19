@@ -77,7 +77,7 @@ def _required_urls_for_gt(plugin_name: str, template_name: str, validation_info:
             urls.append("https://taostats.io/subnets")
         # Match get_required_urls: include list page and homepage when we have detail pages
         if "subnet_id" in vi or "subnet_ids" in vi or "netuids" in vi:
-            urls.append("https://taostats.io/")
+            urls.append("https://taostats.io")
             urls.append("https://taostats.io/subnets")
     elif plugin_name == "coingecko":
         if "coin_id" in vi:
