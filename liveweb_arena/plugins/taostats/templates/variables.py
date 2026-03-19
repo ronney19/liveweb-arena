@@ -45,8 +45,20 @@ _subnet_ids_cache: Optional[List[int]] = None
 _subnet_names_cache: Dict[int, str] = {}
 
 
+def _is_usable_name(name: str) -> bool:
+    """Check if a subnet name is usable in question text.
+
+    A usable name must contain at least one alphanumeric character.
+    Names like '⚒' (single special char) are not usable because they may
+    render as invisible/blank in some contexts, making questions unreadable.
+    """
+    return any(c.isalnum() for c in name)
+
+
 def _fetch_active_subnet_ids() -> List[int]:
     """Fetch active subnet IDs from taostats API.
+
+    Only returns subnets with usable names (contain alphanumeric characters).
 
     Raises:
         RuntimeError: If subnet data is not available (API must be called first)
@@ -63,7 +75,10 @@ def _fetch_active_subnet_ids() -> List[int]:
             "Taostats subnet data not available. Set TAOSTATS_API_KEY environment variable."
         )
 
-    _subnet_ids_cache = [int(k) for k in subnets.keys() if k != "0"]
+    _subnet_ids_cache = [
+        int(k) for k, v in subnets.items()
+        if k != "0" and _is_usable_name(v.get("name", ""))
+    ]
     return _subnet_ids_cache
 
 
@@ -87,7 +102,11 @@ def _fetch_top_subnet_ids(top_n: int = 10) -> List[int]:
 
     # Sort by emission descending - matches taostats.io default page sort
     sorted_subnets = sorted(
-        [(int(k), float(v["emission"]) if v.get("emission") is not None else 0.0) for k, v in subnets.items() if k != "0"],
+        [
+            (int(k), float(v["emission"]) if v.get("emission") is not None else 0.0)
+            for k, v in subnets.items()
+            if k != "0" and _is_usable_name(v.get("name", ""))
+        ],
         key=lambda x: x[1],
         reverse=True
     )
@@ -119,9 +138,13 @@ def _fetch_subnet_name(subnet_id: int) -> str:
         )
 
     subnet = subnets.get(str(subnet_id), {})
-    name = subnet.get("name", "")
-    if name:
-        _subnet_names_cache[subnet_id] = name
+    name = str(subnet.get("name", "") or "").strip()
+    if not name:
+        raise RuntimeError(
+            f"Subnet {subnet_id} has empty name in cached data. "
+            f"This indicates corrupted cache or a bug in _parse_subnet_data."
+        )
+    _subnet_names_cache[subnet_id] = name
     return name
 
 

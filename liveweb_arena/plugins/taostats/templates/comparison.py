@@ -30,7 +30,7 @@ def _get_subnet_pairs(rng: random.Random, count: int = 2) -> List[Tuple[int, str
         return []
 
     selected_ids = rng.sample(subnet_ids, count)
-    return [(sid, _fetch_subnet_name(sid) or f"Subnet {sid}") for sid in selected_ids]
+    return [(sid, _fetch_subnet_name(sid)) for sid in selected_ids]
 
 
 @register_template("taostats_comparison")

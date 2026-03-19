@@ -56,7 +56,9 @@ def _parse_subnet_data(subnet: Dict[str, Any]) -> Dict[str, Any]:
     dtao = snapshot.get("dtao") or {}
 
     # Get name from identities or fall back to symbol
-    name = identities.get("subnetName", "") or snapshot.get("token_symbol", f"SN{netuid}")
+    # str() for type safety, .strip() to reject whitespace-only names
+    raw_name = identities.get("subnetName") or snapshot.get("token_symbol") or ""
+    name = str(raw_name).strip() or f"SN{netuid}"
 
     # Convert rao values to TAO (None-safe: preserve None for missing data)
     _subnet_tao = _safe_float(snapshot.get("subnet_tao"))
@@ -347,6 +349,21 @@ def _is_file_cache_valid() -> bool:
     return False
 
 
+def _sanitize_subnet_names(subnets: dict) -> dict:
+    """Ensure all subnet entries have non-empty names.
+
+    Old file caches written before the name-fix may contain empty/blank names.
+    Apply the same normalization as _parse_subnet_data: strip whitespace,
+    fall back to SN{netuid}.
+    """
+    for netuid, data in subnets.items():
+        if isinstance(data, dict):
+            name = str(data.get("name", "") or "").strip()
+            if not name:
+                data["name"] = f"SN{netuid}"
+    return subnets
+
+
 def _load_file_cache() -> Optional[dict]:
     """Load subnets from file cache if valid. Returns subnets dict or None."""
     cache_file = _get_file_cache_path()
@@ -357,7 +374,7 @@ def _load_file_cache() -> Optional[dict]:
         if time.time() - cached.get("_fetched_at", 0) < _get_cache_ttl():
             subnets = cached.get("subnets", {})
             if subnets:
-                return subnets
+                return _sanitize_subnet_names(subnets)
     except Exception:
         pass
     return None

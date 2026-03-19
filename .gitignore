@@ -62,3 +62,6 @@ logs/
 
 # uv
 .python-version
+
+# EvoMesh (entire directory ignored)
+.evomesh/
