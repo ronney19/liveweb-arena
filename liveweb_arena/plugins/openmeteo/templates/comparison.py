@@ -5,8 +5,8 @@ Requires the agent to visit two separate pages, read both temperatures,
 and compute the numeric difference.
 
 Dynamic data: temperatures change continuously.
-15 city pairs from different climate zones ensure interesting comparisons.
-Answer is a numeric difference (°C), not a binary choice — random baseline ≈ 0%.
+City pairs drawn from 170 cities: C(170,2) = 14365 possible pairs.
+Answer is a numeric difference (deg C), not a binary choice — random baseline ~ 0%.
 """
 
 import random
@@ -20,7 +20,7 @@ from liveweb_arena.core.ground_truth_trigger import (
 )
 from liveweb_arena.core.gt_collector import GTSourceType, get_current_gt_collector
 
-from .variables import CITY_PAIRS
+from .variables import CITIES
 
 
 PATTERNS = [
@@ -37,8 +37,8 @@ class OpenMeteoComparisonTemplate(QuestionTemplate):
     HARD: Compute temperature difference between two cities.
 
     Requires visiting two different location pages, reading both temperatures,
-    and computing the numeric difference. Answer is a signed number in °C.
-    15 city pairs x 4 patterns x 2 orderings = 120 question variants.
+    and computing the numeric difference. Answer is a signed number in deg C.
+    C(170, 2) = 14365 city pairs x 4 patterns x 2 orderings = 114920 variants.
     """
 
     GT_SOURCE = GTSourceType.PAGE_ONLY
@@ -49,7 +49,7 @@ class OpenMeteoComparisonTemplate(QuestionTemplate):
     def generate(self, seed: int, variant: Optional[int] = None) -> GeneratedQuestion:
         rng = random.Random(seed)
 
-        pair = rng.choice(CITY_PAIRS)
+        pair = rng.sample(CITIES, 2)
         city1, city2 = pair
 
         # Randomly swap order

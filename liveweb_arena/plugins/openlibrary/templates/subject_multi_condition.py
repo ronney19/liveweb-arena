@@ -70,9 +70,25 @@ SUBJECTS = [
     "classic_literature",
     "drama",
     "psychology",
+    # --- Expanded subjects (15) ---
+    "crime",
+    "humor",
+    "war",
+    "travel",
+    "art",
+    "music",
+    "religion",
+    "economics",
+    "mythology",
+    "sports",
+    "cooking",
+    "technology",
+    "education",
+    "politics",
+    "medicine",
 ]
 
-STORY_COUNTS = [10, 15, 20]
+STORY_COUNTS = [5, 10, 15, 20]
 
 PATTERNS = {
     ConditionType.HIGH_EDITIONS_OLD: [

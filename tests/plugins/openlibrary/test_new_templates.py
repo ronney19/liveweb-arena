@@ -111,7 +111,7 @@ def test_author_editions_generate(seed):
     assert "search_query" in q.validation_info
     assert q.validation_info["search_query"].startswith('author:"')
     assert "q=author%3A%22" in q.start_url
-    assert "sort=editions" in q.start_url
+    assert "sort=editions" in q.start_url or "sort=new" in q.start_url
 
 
 def test_book_comparison_metrics_do_not_include_edition_count():

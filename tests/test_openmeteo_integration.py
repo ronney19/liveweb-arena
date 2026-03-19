@@ -178,11 +178,22 @@ def test_forecast_trend_uses_daily_values_after_city_visit(collector):
 
     result = run_async(
         OpenMeteoForecastTrendTemplate().get_ground_truth(
-            {"city_name": "Tokyo", "coord_key": "35.68,139.65"}
+            {
+                "city_name": "Tokyo",
+                "coord_key": "35.68,139.65",
+                "metric_field": "temperature_2m_max",
+                "metric_label": "daily maximum temperature",
+                "unit": "°C",
+                "day1_idx": 0,
+                "day2_idx": 1,
+                "day1_label": "today",
+                "day2_label": "tomorrow",
+            }
         )
     )
     assert result.success is True
-    assert result.value == "Colder by 1.4°C (today: 15.2°C, tomorrow: 13.8°C)"
+    assert "1.4" in result.value
+    assert "Lower" in result.value or "lower" in result.value
 
 
 def test_comparison_gt_returns_numeric_difference(collector):

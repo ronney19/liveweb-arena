@@ -28,23 +28,32 @@ def get_collected_location_data(
     return data, None
 
 
-def get_today_hourly_temperatures(
+def get_today_hourly_series(
     data: Dict[str, Any],
+    field_name: str,
 ) -> Tuple[Optional[List[float]], Optional[GroundTruthResult]]:
-    """Extract today's hourly temperatures from a collected API payload."""
+    """Extract today's hourly values for the given field from API data.
+
+    Returns (values, None) on success, or (None, failure_result) on error.
+    """
     hourly = data.get("hourly")
     if not hourly:
         return None, GroundTruthResult.fail("No hourly data in API response")
 
     times = hourly.get("time")
-    temps = hourly.get("temperature_2m")
-    if not isinstance(times, list) or not isinstance(temps, list):
-        return None, GroundTruthResult.fail("Hourly data missing time/temperature_2m arrays")
-    if len(times) != len(temps):
-        return None, GroundTruthResult.fail("Hourly time and temperature_2m arrays differ in length")
+    series = hourly.get(field_name)
+    if not isinstance(times, list) or not isinstance(series, list):
+        return None, GroundTruthResult.fail(
+            f"Hourly data missing time/{field_name} arrays"
+        )
+    if len(times) != len(series):
+        return None, GroundTruthResult.fail(
+            f"Hourly time and {field_name} arrays differ in length"
+        )
     if not times:
         return None, GroundTruthResult.fail("Hourly forecast is empty")
 
+    # Determine today's date from the data
     today = None
     current = data.get("current_weather")
     if isinstance(current, dict):
@@ -62,17 +71,28 @@ def get_today_hourly_temperatures(
         today = str(times[0]).split("T", 1)[0]
 
     values: List[float] = []
-    for time_str, temp in zip(times, temps):
+    for time_str, val in zip(times, series):
         if not isinstance(time_str, str) or not time_str.startswith(today):
             continue
+        if val is None:
+            continue
         try:
-            values.append(float(temp))
+            values.append(float(val))
         except (TypeError, ValueError):
             return None, GroundTruthResult.fail(
-                "Hourly temperature_2m contains a non-numeric value"
+                f"Non-numeric value in hourly {field_name}: {val!r}"
             )
 
     if not values:
-        return None, GroundTruthResult.fail(f"No hourly temperatures found for {today}")
+        return None, GroundTruthResult.fail(
+            f"No hourly {field_name} data found for today ({today})"
+        )
 
     return values, None
+
+
+def get_today_hourly_temperatures(
+    data: Dict[str, Any],
+) -> Tuple[Optional[List[float]], Optional[GroundTruthResult]]:
+    """Extract today's hourly temperatures from a collected API payload."""
+    return get_today_hourly_series(data, "temperature_2m")

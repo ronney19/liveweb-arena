@@ -1,16 +1,20 @@
-"""Taostats API client using TaoMarketCap Internal API (no rate limiting, no API key)"""
+"""Taostats API client using TaoMarketCap Internal API (no rate limiting, no API key)."""
 
 import asyncio
 import contextvars
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 import aiohttp
 
 from liveweb_arena.plugins.base_client import APIFetchError
 from liveweb_arena.utils.logger import log
+
+logger = logging.getLogger(__name__)
 
 # Cache source name
 CACHE_SOURCE = "taostats"
@@ -20,6 +24,10 @@ API_BASE_URL = "https://api.taomarketcap.com/internal/v1"
 
 # Conversion factor: rao to TAO (1 TAO = 1e9 rao)
 RAO_TO_TAO = 1e9
+
+# Basic retry configuration for TaoMarketCap requests
+MAX_RETRIES = 3
+BACKOFF_BASE_SECONDS = 1.0
 
 
 def _safe_float(value) -> Optional[float]:
@@ -48,7 +56,9 @@ def _parse_subnet_data(subnet: Dict[str, Any]) -> Dict[str, Any]:
     dtao = snapshot.get("dtao") or {}
 
     # Get name from identities or fall back to symbol
-    name = identities.get("subnetName", "") or snapshot.get("token_symbol", f"SN{netuid}")
+    # str() for type safety, .strip() to reject whitespace-only names
+    raw_name = identities.get("subnetName") or snapshot.get("token_symbol") or ""
+    name = str(raw_name).strip() or f"SN{netuid}"
 
     # Convert rao values to TAO (None-safe: preserve None for missing data)
     _subnet_tao = _safe_float(snapshot.get("subnet_tao"))
@@ -103,7 +113,7 @@ def _parse_subnet_data(subnet: Dict[str, Any]) -> Dict[str, Any]:
 
 async def fetch_all_subnets() -> Dict[str, Any]:
     """
-    Fetch all subnets from TaoMarketCap Internal API.
+    Fetch all subnets from TaoMarketCap Internal API with basic retry logic.
 
     Retries up to 3 times on transient errors (network, timeout, decode) so that
     GT collection and training dataset generation are more resilient.
@@ -115,19 +125,35 @@ async def fetch_all_subnets() -> Dict[str, Any]:
                 ...
             }
         }
-    """
-    subnets = {}
-    last_error = None
-    max_attempts = 3
 
-    for attempt in range(max_attempts):
-        try:
-            async with aiohttp.ClientSession() as session:
+    Raises:
+        APIFetchError: If the API fails or returns no usable subnet data.
+    """
+    last_error: Optional[Exception] = None
+
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(MAX_RETRIES):
+            subnets: Dict[str, Any] = {}
+            try:
+                # Fetch all subnets (paginated, get up to 200)
                 async with session.get(
                     f"{API_BASE_URL}/subnets",
                     params={"limit": 200},
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
+                    if resp.status >= 500:
+                        body = await resp.text()
+                        last_error = APIFetchError(
+                            f"status={resp.status}, body={body[:500]}",
+                            source="taostats",
+                            status_code=resp.status,
+                        )
+                        # Retry on server-side errors
+                        if attempt < MAX_RETRIES - 1:
+                            await asyncio.sleep(BACKOFF_BASE_SECONDS * (2**attempt))
+                            continue
+                        raise last_error
+
                     if resp.status != 200:
                         body = await resp.text()
                         raise APIFetchError(
@@ -138,27 +164,53 @@ async def fetch_all_subnets() -> Dict[str, Any]:
 
                     data = await resp.json()
                     results = data.get("results", [])
+                    if not isinstance(results, list):
+                        raise APIFetchError(
+                            f"Unexpected results type: {type(results).__name__}",
+                            source="taostats",
+                        )
 
                     for subnet in results:
+                        # Defensive: skip malformed entries
+                        if not isinstance(subnet, dict):
+                            logger.warning(
+                                "Skipping malformed subnet entry: %s",
+                                type(subnet).__name__,
+                            )
+                            continue
                         netuid = str(subnet.get("netuid", ""))
                         if not netuid or netuid == "0":  # Skip root network
                             continue
 
                         subnets[netuid] = _parse_subnet_data(subnet)
 
-            if not subnets:
-                raise APIFetchError("API returned no subnet data", source="taostats")
+                if not subnets:
+                    raise APIFetchError("API returned no subnet data", source="taostats")
 
-            return {"subnets": subnets}
+                return {"subnets": subnets}
 
-        except APIFetchError:
-            raise
-        except Exception as e:
-            last_error = e
-            if attempt < max_attempts - 1:
-                await asyncio.sleep(1.0 + attempt * 0.5)
-                continue
-            raise APIFetchError(f"Unexpected error: {e}", source="taostats") from last_error
+            except APIFetchError:
+                # Do not retry APIFetchError unless it was a 5xx handled above.
+                raise
+            except asyncio.TimeoutError as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(BACKOFF_BASE_SECONDS * (2**attempt))
+                    continue
+                raise APIFetchError(
+                    "Timeout while fetching Taostats subnets",
+                    source="taostats",
+                ) from e
+            except Exception as e:
+                # Network/parsing errors: retry a few times before failing
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(BACKOFF_BASE_SECONDS * (2**attempt))
+                    continue
+                raise APIFetchError(f"Unexpected error: {e}", source="taostats") from e
+
+    # Defensive fallback (should not be reached)
+    raise APIFetchError(f"Taostats fetch failed: {last_error}", source="taostats")
 
 
 async def fetch_single_subnet_data(subnet_id: str) -> Dict[str, Any]:
@@ -267,7 +319,8 @@ def _filter_by_emission(subnets: Dict[str, Any]) -> Dict[str, Any]:
         key=lambda kv: float(kv[1]["emission"]) if kv[1].get("emission") is not None else -1,
         reverse=True,
     )
-    keep = len(ranked) // 2
+    # Keep the top half; for odd counts, keep the larger half.
+    keep = (len(ranked) + 1) // 2
     filtered = dict(ranked[:keep])
     log("Filter", f"Emission top-half: {len(subnets)} → {len(filtered)} subnets")
     return filtered
@@ -299,6 +352,21 @@ def _is_file_cache_valid() -> bool:
     return False
 
 
+def _sanitize_subnet_names(subnets: dict) -> dict:
+    """Ensure all subnet entries have non-empty names.
+
+    Old file caches written before the name-fix may contain empty/blank names.
+    Apply the same normalization as _parse_subnet_data: strip whitespace,
+    fall back to SN{netuid}.
+    """
+    for netuid, data in subnets.items():
+        if isinstance(data, dict):
+            name = str(data.get("name", "") or "").strip()
+            if not name:
+                data["name"] = f"SN{netuid}"
+    return subnets
+
+
 def _load_file_cache() -> Optional[dict]:
     """Load subnets from file cache if valid. Returns subnets dict or None."""
     cache_file = _get_file_cache_path()
@@ -309,7 +377,7 @@ def _load_file_cache() -> Optional[dict]:
         if time.time() - cached.get("_fetched_at", 0) < _get_cache_ttl():
             subnets = cached.get("subnets", {})
             if subnets:
-                return subnets
+                return _sanitize_subnet_names(subnets)
     except Exception:
         pass
     return None

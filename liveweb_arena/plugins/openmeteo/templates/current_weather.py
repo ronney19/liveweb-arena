@@ -1,11 +1,11 @@
 """Current weather template for Open Meteo - EASY DIFFICULTY.
 
-Asks for a single current weather metric (temperature or wind speed)
-for a given city. The agent starts on the generic Open-Meteo docs page,
-searches for the location, and then reads the current value.
+Asks for a single current weather metric (temperature, wind speed, or wind
+direction) for a given city. The agent starts on the generic Open-Meteo docs
+page, searches for the location, and then reads the current value.
 
 Dynamic data: current weather updates every 15 minutes.
-Large entity pool: 40 cities x 2 metrics = 80 question variants per pattern.
+Large entity pool: 170 cities x 3 metrics = 510 effective variants (>500).
 """
 
 import random
@@ -34,6 +34,11 @@ PATTERNS = {
         "On Open-Meteo, what is the wind speed in {city} right now?",
         "Using the Open-Meteo weather service, find the current wind speed in {city}.",
     ],
+    CurrentMetric.WIND_DIRECTION: [
+        "What is the current wind direction in {city} according to Open-Meteo? Answer in degrees.",
+        "On Open-Meteo, what direction is the wind blowing in {city} right now? Give the answer in degrees.",
+        "Using the Open-Meteo weather service, find the current wind direction in {city} in degrees.",
+    ],
 }
 
 
@@ -45,7 +50,7 @@ class OpenMeteoCurrentWeatherTemplate(QuestionTemplate):
     RL value:
     - Form interaction: must search/select a location in the docs UI
     - Dynamic data: weather changes every 15 minutes
-    - 40 cities x 2 metrics x 3 patterns = 240 question variants
+    - 170 cities x 3 metrics x 3 patterns = 1530 question variants
     """
 
     GT_SOURCE = GTSourceType.PAGE_ONLY

@@ -20,6 +20,7 @@ from liveweb_arena.core.validators.base import (
 from .common import get_collected_data, parse_numeric
 
 AUTHOR_POOL = [
+    # --- Original pool (20) ---
     ("Charles Dickens", "charles dickens"),
     ("Jane Austen", "jane austen"),
     ("William Shakespeare", "william shakespeare"),
@@ -40,21 +41,78 @@ AUTHOR_POOL = [
     ("Emily Bronte", "emily bronte"),
     ("Miguel de Cervantes", "miguel de cervantes"),
     ("Alexandre Dumas", "alexandre dumas"),
+    # --- Expanded pool (50) ---
+    ("Leo Tolstoy", "leo tolstoy"),
+    ("Fyodor Dostoevsky", "fyodor dostoevsky"),
+    ("Thomas Hardy", "thomas hardy"),
+    ("Rudyard Kipling", "rudyard kipling"),
+    ("Robert Louis Stevenson", "robert louis stevenson"),
+    ("Louisa May Alcott", "louisa may alcott"),
+    ("Nathaniel Hawthorne", "nathaniel hawthorne"),
+    ("Walt Whitman", "walt whitman"),
+    ("Henry James", "henry james"),
+    ("Joseph Conrad", "joseph conrad"),
+    ("Stephen King", "stephen king"),
+    ("J.K. Rowling", "j k rowling"),
+    ("Roald Dahl", "roald dahl"),
+    ("Philip K. Dick", "philip k dick"),
+    ("Isaac Asimov", "isaac asimov"),
+    ("Ray Bradbury", "ray bradbury"),
+    ("Kurt Vonnegut", "kurt vonnegut"),
+    ("Toni Morrison", "toni morrison"),
+    ("Gabriel Garcia Marquez", "gabriel garcia marquez"),
+    ("Haruki Murakami", "haruki murakami"),
+    ("F. Scott Fitzgerald", "f scott fitzgerald"),
+    ("James Joyce", "james joyce"),
+    ("Albert Camus", "albert camus"),
+    ("Aldous Huxley", "aldous huxley"),
+    ("George Bernard Shaw", "george bernard shaw"),
+    ("Anton Chekhov", "anton chekhov"),
+    ("Henrik Ibsen", "henrik ibsen"),
+    ("Tennessee Williams", "tennessee williams"),
+    ("Samuel Beckett", "samuel beckett"),
+    ("P.G. Wodehouse", "p g wodehouse"),
+    ("Chinua Achebe", "chinua achebe"),
+    ("Salman Rushdie", "salman rushdie"),
+    ("Ursula K. Le Guin", "ursula k le guin"),
+    ("Philip Pullman", "philip pullman"),
+    ("Neil Gaiman", "neil gaiman"),
+    ("Terry Pratchett", "terry pratchett"),
+    ("Margaret Atwood", "margaret atwood"),
+    ("Octavia Butler", "octavia butler"),
+    ("Kazuo Ishiguro", "kazuo ishiguro"),
+    ("John Steinbeck", "john steinbeck"),
+    ("William Faulkner", "william faulkner"),
+    ("Ralph Waldo Emerson", "ralph waldo emerson"),
+    ("Emily Dickinson", "emily dickinson"),
+    ("Rabindranath Tagore", "rabindranath tagore"),
+    ("Jorge Luis Borges", "jorge luis borges"),
+    ("Italo Calvino", "italo calvino"),
+    ("Umberto Eco", "umberto eco"),
+    ("Paulo Coelho", "paulo coelho"),
+    ("Isabel Allende", "isabel allende"),
+    ("Chimamanda Ngozi Adichie", "chimamanda ngozi adichie"),
 ]
 
-RESULT_COUNTS = [3, 5, 7]
+RESULT_COUNTS = [3, 5, 7, 10]
+
+SORT_OPTIONS = [
+    ("editions", "most editions"),
+    ("new", "newest first"),
+]
+
 PATTERNS = [
     (
-        "Search Open Library for books by \"{author}\" sorted by most editions. "
-        "What is the total number of editions across the first {n} results?"
+        'Search Open Library for books by "{author}" sorted by {sort_label}. '
+        "What is the total number of editions across the top {n} results?"
     ),
     (
-        "On Open Library, look up books by \"{author}\" and sort by most editions. "
-        "Sum the edition counts of the top {n} books."
+        'On Open Library, look up books by "{author}" ({sort_label}). '
+        "Among the first {n} results, what is the combined edition count?"
     ),
     (
-        "Find books by \"{author}\" on Open Library (sort: most editions). "
-        "Among the first {n} results, what is the combined editions total?"
+        'Find books by "{author}" on Open Library ({sort_label}). '
+        "Among the first {n} results, what is the combined edition count?"
     ),
 ]
 
@@ -72,12 +130,15 @@ class OpenLibraryAuthorEditionsTemplate(QuestionTemplate):
         rng = random.Random(seed)
         author_name, author_query = rng.choice(AUTHOR_POOL)
         count = RESULT_COUNTS[variant % len(RESULT_COUNTS)] if variant is not None else rng.choice(RESULT_COUNTS)
+        sort_key, sort_label = rng.choice(SORT_OPTIONS)
         search_query = f'author:"{author_query}"'
 
         pattern = rng.choice(PATTERNS)
-        question_text = pattern.format(author=author_name, n=count)
+        question_text = pattern.format(
+            author=author_name, n=count, sort_label=sort_label,
+        )
         query_encoded = quote_plus(search_query)
-        start_url = f"https://openlibrary.org/search?q={query_encoded}&sort=editions"
+        start_url = f"https://openlibrary.org/search?q={query_encoded}&sort={sort_key}"
 
         return GeneratedQuestion(
             question_text=question_text,
@@ -85,12 +146,13 @@ class OpenLibraryAuthorEditionsTemplate(QuestionTemplate):
             variables={
                 "author": author_name,
                 "work_count": count,
+                "sort": sort_key,
             },
             validation_info={
                 "author_name": author_name,
                 "author_query": author_query,
                 "search_query": search_query,
-                "sort": "editions",
+                "sort": sort_key,
                 "work_count": count,
             },
             template_name=self.name,
